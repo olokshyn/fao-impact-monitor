@@ -5,7 +5,10 @@ import pandas as pd
 import wbgapi as wb
 from pydantic import ConfigDict
 
+from fao_impact_monitor.metric.metric import Metric
+
 from .data_source import DataResult, DataSource
+from .data_source_config import DataSourceConfig
 
 
 class WorldBankDataResult(DataResult):
@@ -14,19 +17,28 @@ class WorldBankDataResult(DataResult):
     data: pd.DataFrame
 
 
+class WorldBankDataSourceConfig(DataSourceConfig):
+    indicator: str
+
+
 class WorldBank(DataSource):
     source: str = "WorldBank"
-    indicator: str
 
     async def get_data(
         self,
+        metric: Metric,
+        data_source_config: DataSourceConfig,
         country_iso3: str,
         *,
         year_start: int | None = None,
         year_end: int | None = None,
     ) -> list[DataResult]:
+        config = WorldBankDataSourceConfig.model_validate(
+            data_source_config.model_dump()
+        )
         return await asyncio.to_thread(
             self._get_data_sync,
+            config,
             country_iso3,
             year_start,
             year_end,
@@ -34,12 +46,13 @@ class WorldBank(DataSource):
 
     def _get_data_sync(
         self,
+        config: WorldBankDataSourceConfig,
         country_iso3: str,
         year_start: int | None,
         year_end: int | None,
     ) -> list[DataResult]:
         wide = wb.data.DataFrame(
-            self.indicator,
+            config.indicator,
             country_iso3,
             time=self._time_range(year_start, year_end),
             numericTimeKeys=True,
@@ -52,9 +65,9 @@ class WorldBank(DataSource):
         data = row.rename("value").rename_axis("year").reset_index()
         data["year"] = data["year"].astype(int)
 
-        series_info = wb.series.get(self.indicator)
-        indicator_name = series_info.get("value", self.indicator)
-        url = f"https://data.worldbank.org/indicator/{self.indicator}"
+        series_info = wb.series.get(config.indicator)
+        indicator_name = series_info.get("value", config.indicator)
+        url = f"https://data.worldbank.org/indicator/{config.indicator}"
         citation = (
             f'World Bank. "{indicator_name}". World Development Indicators. {url}'
         )
@@ -62,15 +75,15 @@ class WorldBank(DataSource):
         return [
             WorldBankDataResult(
                 source=self.source,
-                document=indicator_name,
+                title=indicator_name,
                 url=url,
                 citation=citation,
                 metadata={
-                    "indicator": self.indicator,
+                    "indicator": config.indicator,
                     "country_iso3": country_iso3,
                     "year_start": year_start,
                     "year_end": year_end,
-                    "unit": self.unit,
+                    "unit": config.unit,
                 },
                 data=data,
             )

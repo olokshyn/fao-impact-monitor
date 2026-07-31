@@ -1,10 +1,13 @@
-from .data_source import DataResult, DataSource, build_data_source
-from .world_bank import WorldBank, WorldBankDataResult
+from .data_source import DataResult, DataSource, get_data_source
+from .data_source_config import DataSourceConfig
+from .world_bank import WorldBank, WorldBankDataResult, WorldBankDataSourceConfig
 
 __all__ = [
     "DataResult",
     "DataSource",
+    "DataSourceConfig",
     "WorldBank",
     "WorldBankDataResult",
-    "build_data_source",
+    "WorldBankDataSourceConfig",
+    "get_data_source",
 ]

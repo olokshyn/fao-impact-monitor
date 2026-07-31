@@ -104,40 +104,55 @@ uv run pytest -m "not integration"
 ## Adding a data source
 
 New providers implement the `DataSource` interface in
-`src/fao_impact_monitor/data_source/data_source.py`. Concrete subclasses are
-registered automatically by the `source` field default and can be constructed
-with `build_data_source(source, **kwargs)`.
+`src/fao_impact_monitor/data_source/data_source.py`. There is one `DataSource`
+instance per provider type (for example one `WorldBank`, one FAOSTAT). Provider
+parameters such as a World Bank indicator live on a `DataSourceConfig` subclass
+read from the metrics definition, not on the `DataSource` itself.
+
+Concrete subclasses are registered automatically by the `source` class attribute
+and constructed with `build_data_source(source)`.
 
 ### Implement the interface
 
 1. Add a module under `src/fao_impact_monitor/data_source/` (see
    `world_bank.py` as the reference implementation).
-2. Subclass `DataSource`, set a unique `source: str = "..."` default, and add
-   any provider-specific fields (for example `indicator` on `WorldBank`).
-3. Implement `async def get_data(self, country_iso3, *, year_start=None, year_end=None) -> list[DataResult]`.
-4. Return `DataResult` (or a subclass) with `source`, `citation`, `metadata`,
+2. Subclass `DataSource` and set a unique `source: str = "..."` class attribute.
+3. Subclass `DataSourceConfig` for any provider-specific fields (for example
+   `indicator` on `WorldBankDataSourceConfig`).
+4. Implement
+   `async def get_data(self, metric, data_source_config, country_iso3, *, year_start=None, year_end=None) -> list[DataResult]`.
+   Validate `data_source_config` into your config subclass inside `get_data`.
+5. Return `DataResult` (or a subclass) with `source`, `citation`, `metadata`,
    and optional `document` / `url`. Attach provider-specific payload fields on a
    subclass when needed (for example `WorldBankDataResult.data`).
-5. Export the class from `src/fao_impact_monitor/data_source/__init__.py` so it
-   is imported and registered.
+6. Export the classes from `src/fao_impact_monitor/data_source/__init__.py` so
+   the source is imported and registered.
 
 Minimal shape:
 
 ```python
-from fao_impact_monitor.data_source import DataResult, DataSource
+from fao_impact_monitor.data_source import DataResult, DataSource, DataSourceConfig
+from fao_impact_monitor.metric import Metric
+
+
+class MySourceConfig(DataSourceConfig):
+    # provider-specific fields...
+    ...
 
 
 class MySource(DataSource):
     source: str = "MySource"
-    # provider-specific fields...
 
     async def get_data(
         self,
+        metric: Metric,
+        data_source_config: DataSourceConfig,
         country_iso3: str,
         *,
         year_start: int | None = None,
         year_end: int | None = None,
     ) -> list[DataResult]:
+        config = MySourceConfig.model_validate(data_source_config.model_dump())
         ...
 ```
 
@@ -146,8 +161,9 @@ class MySource(DataSource):
 Every new data source must have unit tests under `./tests`. Follow
 `tests/test_world_bank.py`:
 
-- Cover registration via `build_data_source` and the source-specific fields.
-- Cover `get_data` behaviour with mocked HTTP / SDK calls (no network).
+- Cover registration via `build_data_source` (no provider kwargs on the source).
+- Cover `get_data` behaviour with a `Metric`, a source config, and mocked HTTP /
+  SDK calls (no network).
 - Include **at least one** `@pytest.mark.integration` test that calls the live
   API and asserts a real response shape (non-empty data, expected metadata,
   citations, etc.).
@@ -156,7 +172,9 @@ Every new data source must have unit tests under `./tests`. Follow
 
 Use cases live under `use-cases/` as JSON (see `use-cases/el-nino.json`).
 Each file describes an event scenario, its metrics, and which data sources feed
-each metric.
+each metric. Metrics map to the `Metric` model in
+`src/fao_impact_monitor/metric/metric.py`; each `data_sources` entry maps to
+`DataSourceConfig` (or a subclass).
 
 Top-level fields:
 
@@ -179,8 +197,9 @@ Each metric object:
 
 Each entry in `data_sources` must include `source` matching a registered
 `DataSource.source` value (for example `"WorldBank"`). Additional keys are
-passed through to that class via `build_data_source`—for `WorldBank`, that is
-typically `indicator` and optional `unit`:
+provider config fields on that source’s `DataSourceConfig` subclass—for
+`WorldBank`, that is typically `indicator` and optional `unit`. Those configs
+are passed into `get_data` together with the parent `Metric`:
 
 ```json
 {
@@ -201,7 +220,7 @@ typically `indicator` and optional `unit`:
 To add a metric: append an object to `metrics` with the fields above and point
 `data_sources` at one or more registered sources (and their parameters). To wire
 a newly implemented source into a use case, use its `source` string and any
-fields that class declares.
+fields its config class declares.
 
 Sources that are not yet implemented in code (for example `"GIEWS"` or
 `"FAO Drought Portal"` in `el-nino.json`) can still appear in the JSON as
