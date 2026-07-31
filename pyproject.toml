@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "asyncio>=4.0.0",
+    "beanie>=2.1.0",
     "numpy>=2.5.1",
     "pandas>=3.0.5",
     "pydantic>=2.13.4",
@@ -17,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 fao-impact-monitor = "fao_impact_monitor:main"
+check = "fao_impact_monitor.check:main"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]

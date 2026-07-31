@@ -53,6 +53,14 @@ uv sync                # reinstall from lockfile / pyproject.toml
 
 Run these after editing code. Prefer this order: format → lint → type-check → tests.
 
+Or run format, lint, type-check and tests together:
+
+```bash
+uv run check
+```
+
+This applies `ruff format`, runs `ruff check`, then `mypy`, then `pytest` (stops on the first failure).
+
 ### Format and lint (`ruff`)
 
 Apply formatting:

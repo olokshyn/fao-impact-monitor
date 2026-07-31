@@ -1,36 +1,14 @@
-from abc import ABC, ABCMeta, abstractmethod
-from typing import Any, cast
+from abc import ABC, abstractmethod
+from typing import Any
 
 from pydantic import BaseModel
 
 from fao_impact_monitor.data_source.data_source_config import DataSourceConfig
 from fao_impact_monitor.metric.metric import Metric
+from fao_impact_monitor.utils.meta_magic import RegistryMeta
 
 _DATA_SOURCE_CLS_REGISTRY: dict[str, type["DataSource"]] = {}
 _DATA_SOURCE_INSTANCE_REGISTRY: dict[str, "DataSource"] = {}
-
-
-class DataSourceMeta(ABCMeta):
-    def __new__(
-        mcs,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, Any],
-        **kwargs: Any,
-    ) -> type["DataSource"]:
-        cls = cast(
-            "type[DataSource]",
-            super().__new__(mcs, name, bases, namespace, **kwargs),
-        )
-        if cls.__dict__.get("__abstractmethods__"):
-            return cls
-
-        source = namespace.get("source")
-        if not isinstance(source, str):
-            raise TypeError(f"Source must be a string, got {type(source)} for {name}")
-
-        _DATA_SOURCE_CLS_REGISTRY[source] = cls
-        return cls
 
 
 class DataResult(BaseModel):
@@ -39,6 +17,11 @@ class DataResult(BaseModel):
     url: str | None = None
     citation: str
     metadata: dict[str, Any]
+
+
+class DataSourceMeta(RegistryMeta):
+    registry = _DATA_SOURCE_CLS_REGISTRY
+    attr = "source"
 
 
 class DataSource(ABC, metaclass=DataSourceMeta):

@@ -64,10 +64,31 @@ def test_metaclass_skips_abstract_data_source() -> None:
     assert "AbstractMock" not in _DATA_SOURCE_CLS_REGISTRY
 
 
+def test_metaclass_skips_annotation_only_source() -> None:
+    class AnnotationOnly(DataSource):
+        source: str
+
+        async def get_data(
+            self,
+            metric: Metric,
+            data_source_config: DataSourceConfig,
+            country_iso3: str,
+            *,
+            year_start: int | None = None,
+            year_end: int | None = None,
+        ) -> list[DataResult]:
+            return []
+
+    assert "AnnotationOnly" not in _DATA_SOURCE_CLS_REGISTRY
+    assert AnnotationOnly not in _DATA_SOURCE_CLS_REGISTRY.values()
+
+
 def test_metaclass_requires_source_string() -> None:
     with pytest.raises(TypeError, match="Source must be a string"):
 
         class NoDefaultSource(DataSource):
+            source = 123  # type: ignore[assignment]
+
             async def get_data(
                 self,
                 metric: Metric,
