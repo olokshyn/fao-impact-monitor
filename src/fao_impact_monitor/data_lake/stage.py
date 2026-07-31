@@ -103,3 +103,7 @@ class Stage(ABC, metaclass=StageMeta):
         stage_params: dict[str, Any],
         prev_stages: list[StageResult],
     ) -> StageResult: ...
+
+
+def get_stage(name: str) -> Stage:
+    return _STAGE_REGISTRY[name]()

@@ -42,6 +42,8 @@ class Document(BeanieDocument):
         ),
     ] = None
     relations: list[Relation] = Field(default_factory=list)
+    pipeline_name: str
+    pipeline_completed: bool = False
     stage_results: dict[str, list[StageResult]] = Field(default_factory=dict)
 
     @property
