@@ -1,0 +1,82 @@
+{
+    "name": "El Niño",
+    "description": "El Niño is a natural climate pattern in which parts of the tropical Pacific Ocean become unusually warm. It changes weather around the world, causing droughts in some places and heavier rain or flooding in others.",
+    "config": {
+        "use_all_fao_data_sources": true
+    },
+    "metrics": [
+        {
+            "name": "Agriculture share of GDP",
+            "description": "The share of agriculture in the total GDP of a country.",
+            "example": "Agriculture contributed 24.3% of GDP in 2023.",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "WorldBank",
+                    "indicator": "NV.AGR.TOTL.ZS",
+                    "unit": "%"
+                }
+            ]
+        },
+        {
+            "name": "Agriculture share of Labour",
+            "description": "The share of agriculture in the total labor force of a country.",
+            "example": "Agriculture employs more than 70% of the national labor force",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "WorldBank",
+                    "indicator": "SL.AGR.EMPL.ZS",
+                    "unit": "%"
+                }
+            ]
+        },
+        {
+            "name": "Cropland",
+            "description": "Hectares of cropland affected by droughts or flood in an El Niño event since 1997, national and subnational data points",
+            "example": "More than 35% of cultivated land in the south was completely dry, with no harvest expected until the following rainy season.",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAO Drought Portal"
+                }
+            ]
+        },
+        {
+            "name": "Pastureland",
+            "description": "Hectares of pastureland affected by droughts or flood in an El Nino event since 1997, national and subnational data points",
+            "example": "More than 40% of pastureland in the north was completely dry, with no grazing expected until the following rainy season.",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "GIEWS",
+                    "collection": "El Niño/La Niña Collection"
+                }
+            ]
+        },
+        {
+            "name": "Crop yield loss",
+            "description": "Crop yield loss as a result of drought or flood during an El Nino event since 1997, national and subnational data points",
+            "example": "Among households surveyed in 14 affected districts, 51% reported harvests more than 50% lower than in 2023. Nearly 720,000 tonnes of maize were lost, valued at about USD 349 million and equivalent to roughly 7% of agricultural GDP",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "GIEWS",
+                    "collection": "El Niño/La Niña Collection"
+                }
+            ]
+        },
+        {
+            "name": "Livestock loss",
+            "description": "Livestock loss as a result of drought or flood during an El Nino event since 1997, national and subnational data points",
+            "example": "In the worst-affected areas, over 30% of livestock were lost, amounting to an estimated USD 247 million in economic losses.",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "GIEWS",
+                    "type": "country_brief"
+                }
+            ]
+        }
+    ]
+}

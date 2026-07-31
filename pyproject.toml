@@ -7,7 +7,13 @@ authors = [
     { name = "Oleh Lokshyn", email = "olokshyn@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "asyncio>=4.0.0",
+    "numpy>=2.5.1",
+    "pandas>=3.0.5",
+    "pydantic>=2.13.4",
+    "wbgapi>=1.0.14",
+]
 
 [project.scripts]
 fao-impact-monitor = "fao_impact_monitor:main"
@@ -19,6 +25,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "mypy>=2.3.0",
+    "pandas-stubs>=3.0.5.260730",
     "pytest>=9.1.1",
     "ruff>=0.16.1",
 ]
@@ -27,5 +34,20 @@ dev = [
 extend-select = ["I", "ANN"]
 ignore = ["ANN401"]  # Allow explicitly chosen Any as an escape hatch
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["*.py"]
+markers = [
+    "integration: tests that call external services",
+]
+
 [tool.mypy]
 strict = true
+
+[[tool.mypy.overrides]]
+module = "wbgapi"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "wbgapi.*"
+ignore_missing_imports = true
