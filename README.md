@@ -176,6 +176,135 @@ Every new data source must have unit tests under `./tests`. Follow
   API and asserts a real response shape (non-empty data, expected metadata,
   citations, etc.).
 
+## Adding a data lake document
+
+Documents are Beanie models stored in MongoDB. The base class lives in
+`src/fao_impact_monitor/data_lake/document.py`. Concrete document types are
+registered via Beanie inheritance (`Settings.class_id` / `class_id_value`).
+
+### Implement the document
+
+1. Add a module under `src/fao_impact_monitor/data_lake/documents/` (see
+   `web_page_document.py` as the reference).
+2. Add a new value to `DocumentType` in `document.py` if the type does not
+   already exist.
+3. Define a module-level importable constant for the type (for example
+   `MY_DOCUMENT_TYPE`) and use it for `Settings.class_id_value`. Do not
+   scatter string / enum literals; other modules should import the constant
+   to avoid typos.
+4. Subclass `Document` and implement the `citation` computed field.
+5. Export the constant and class from
+   `src/fao_impact_monitor/data_lake/documents/__init__.py` so they are
+   imported and available to Beanie.
+
+Minimal shape:
+
+```python
+from pydantic import computed_field
+
+from fao_impact_monitor.data_lake.document import Document, DocumentType
+
+MY_DOCUMENT_TYPE = DocumentType.WEB_PAGE  # or your new DocumentType value
+
+
+class MyDocument(Document):
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def citation(self) -> str:
+        return f"{self.title} ({self.url})"
+
+    class Settings:
+        class_id_value = MY_DOCUMENT_TYPE
+```
+
+### Required tests
+
+Every new document type must have unit tests under `./tests` (for example
+`tests/data_lake/`). Tests are mandatory. Cover construction, `type` /
+`citation`, and any type-specific fields or behaviour.
+
+## Adding a data lake stage
+
+Stages transform documents in a pipeline. The base classes live in
+`src/fao_impact_monitor/data_lake/stage.py`:
+
+| Class          | Role                                              |
+| -------------- | ------------------------------------------------- |
+| `Stage`        | Runnable pipeline step, looked up by `name`       |
+| `StageResult`  | Result written onto the document after a run      |
+| `StageVersion` | Immutable provenance record for stage parameters  |
+
+Concrete `Stage` and `StageResult` subclasses are registered automatically by
+their `name` attribute (`get_stage(name)` resolves a `Stage`).
+
+### Implement the stage
+
+1. Add a module under `src/fao_impact_monitor/data_lake/stages/`.
+2. Define a module-level importable constant for the stage name (for example
+   `MY_STAGE_NAME`). Use that constant for both `Stage.name` and
+   `StageResult.name`. Other modules (pipelines, tests) should import the
+   constant instead of repeating string literals, to avoid typos.
+3. Subclass `StageResult` and set `name: str = MY_STAGE_NAME` **with a
+   default value** (required for registration). Implement `status`. Add
+   fields for the stage’s output as needed.
+4. Subclass `Stage` and set `name = MY_STAGE_NAME`. Implement `get_version`
+   and `run`.
+5. Optionally subclass `StageVersion` with `Settings.class_id_value` when the
+   stage needs custom provenance parameters.
+6. Export the constant and classes from
+   `src/fao_impact_monitor/data_lake/stages/__init__.py` so they are imported
+   and registered.
+
+Minimal shape:
+
+```python
+from typing import Any
+
+from fao_impact_monitor.data_lake.document import Document
+from fao_impact_monitor.data_lake.stage import (
+    Stage,
+    StageResult,
+    StageStatus,
+    StageVersion,
+)
+
+MY_STAGE_NAME = "my_stage"
+
+
+class MyStageResult(StageResult):
+    name: str = MY_STAGE_NAME
+    # stage-specific output fields...
+
+    @property
+    def status(self) -> StageStatus:
+        return StageStatus.COMPLETED if self.error is None else StageStatus.FAILED
+
+
+class MyStage(Stage):
+    name = MY_STAGE_NAME
+
+    async def get_version(self) -> StageVersion:
+        ...
+
+    async def run(
+        self,
+        document: Document,
+        stage_params: dict[str, Any],
+        prev_stages: list[StageResult],
+    ) -> StageResult:
+        ...
+```
+
+### Required tests
+
+Every new stage must have unit tests under `./tests` (for example
+`tests/data_lake/` or `tests/test_pipeline.py`). Tests are mandatory. Cover:
+
+- Registration via `get_stage` (and `StageResult` registration by `name`).
+- `run` behaviour with a document, params, and previous stage results (mock
+  external I/O; no network).
+- Failure / `StageStatus` handling where relevant.
+
 ## Use-case metrics and data sources
 
 Use cases live under `use-cases/` as JSON (see `use-cases/el-nino.json`).
