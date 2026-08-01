@@ -74,12 +74,9 @@ class StageResult(ABC, BaseModel, metaclass=StageResultMeta):
 
     name: str
     version_id: str  # StageVersion.version_id
+    status: StageStatus
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-
-    @property
-    @abstractmethod
-    def status(self) -> StageStatus: ...
 
 
 _STAGE_REGISTRY: dict[str, type["Stage"]] = {}
@@ -107,3 +104,8 @@ class Stage(ABC, metaclass=StageMeta):
 
 def get_stage(name: str) -> Stage:
     return _STAGE_REGISTRY[name]()
+
+
+def get_stage_result_class(name: str) -> type[StageResult]:
+    """Return the registered ``StageResult`` subclass for ``name``."""
+    return _STAGE_RESULT_REGISTRY[name]

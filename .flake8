@@ -1,0 +1,4 @@
+[flake8]
+extend-ignore =
+    # whitespace before ':' (conflicts with formatter slice spacing)
+    E203

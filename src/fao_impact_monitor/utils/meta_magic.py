@@ -47,16 +47,12 @@ Register ``ABC`` + Pydantic ``BaseModel`` subclasses with
 
     class StageResult(ABC, BaseModel, metaclass=StageResultMeta):
         name: str
-
-        @abstractmethod
-        def status(self) -> str: ...
+        status: str
 
 
     class IngestData(StageResult):
         name: str = "ingest"
-
-        def status(self) -> str:
-            return "pending"
+        status: str = "pending"
 
 
     assert _STAGE_REGISTRY["ingest"] is IngestData

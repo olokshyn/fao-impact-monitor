@@ -248,8 +248,8 @@ their `name` attribute (`get_stage(name)` resolves a `Stage`).
    `StageResult.name`. Other modules (pipelines, tests) should import the
    constant instead of repeating string literals, to avoid typos.
 3. Subclass `StageResult` and set `name: str = MY_STAGE_NAME` **with a
-   default value** (required for registration). Implement `status`. Add
-   fields for the stage’s output as needed.
+   default value** (required for registration). Set the base `status` field
+   when constructing results. Add fields for the stage’s output as needed.
 4. Subclass `Stage` and set `name = MY_STAGE_NAME`. Implement `get_version`
    and `run`.
 5. Optionally subclass `StageVersion` with `Settings.class_id_value` when the
@@ -277,10 +277,6 @@ MY_STAGE_NAME = "my_stage"
 class MyStageResult(StageResult):
     name: str = MY_STAGE_NAME
     # stage-specific output fields...
-
-    @property
-    def status(self) -> StageStatus:
-        return StageStatus.COMPLETED if self.error is None else StageStatus.FAILED
 
 
 class MyStage(Stage):

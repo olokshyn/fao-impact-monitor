@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field
 
 from .document import Document
 from .stage import StageResult, StageStatus, get_stage
+from .stages.pdf_crawl_stage import (
+    PDF_CRAWL_STAGE_NAME,
+    PIPELINE_FOR_PDF_PARAM,
+    PIPELINE_FOR_WEB_PARAM,
+)
 
 
 class PipelineStep(BaseModel):
@@ -57,3 +62,27 @@ class Pipeline(BeanieDocument):
                 break
             prev_results.append(result)
         return prev_results
+
+
+PIPELINE_PDF_CRAWL = "pdf_crawl"
+PIPELINE_PDF_PROCESS = "pdf_process"
+
+
+class PdfCrawlPipeline(Pipeline):
+    name: Annotated[str, Indexed(unique=True)] = PIPELINE_PDF_CRAWL
+    steps: list[PipelineStep] = Field(
+        default_factory=lambda: [
+            PipelineStep(
+                stage_name=PDF_CRAWL_STAGE_NAME,
+                params={
+                    PIPELINE_FOR_WEB_PARAM: PIPELINE_PDF_CRAWL,
+                    PIPELINE_FOR_PDF_PARAM: PIPELINE_PDF_PROCESS,
+                },
+            ),
+        ]
+    )
+
+
+class PdfProcessPipeline(Pipeline):
+    name: Annotated[str, Indexed(unique=True)] = PIPELINE_PDF_PROCESS
+    steps: list[PipelineStep] = Field(default_factory=list)

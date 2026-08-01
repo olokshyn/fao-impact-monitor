@@ -21,30 +21,18 @@ from fao_impact_monitor.data_lake.stage import (
 class MockAResult(StageResult):
     name: str = "mock_a"
     value: str = ""
-    result_status: StageStatus = StageStatus.COMPLETED
-
-    @property
-    def status(self) -> StageStatus:
-        return self.result_status
+    status: StageStatus = StageStatus.COMPLETED
 
 
 class MockBResult(StageResult):
     name: str = "mock_b"
     value: str = ""
-    result_status: StageStatus = StageStatus.COMPLETED
-
-    @property
-    def status(self) -> StageStatus:
-        return self.result_status
+    status: StageStatus = StageStatus.COMPLETED
 
 
 class MockFailResult(StageResult):
     name: str = "mock_fail"
-    result_status: StageStatus = StageStatus.FAILED
-
-    @property
-    def status(self) -> StageStatus:
-        return self.result_status
+    status: StageStatus = StageStatus.FAILED
 
 
 class MockAStage(Stage):
@@ -193,7 +181,7 @@ def test_is_completed_uses_latest_result_only() -> None:
                 MockAResult(
                     version_id="a-v2",
                     value="bad",
-                    result_status=StageStatus.FAILED,
+                    status=StageStatus.FAILED,
                     error="later failure",
                 ),
             ]
@@ -260,7 +248,7 @@ def test_run_retries_failed_stage() -> None:
                 MockAResult(
                     version_id="a-v0",
                     value="old",
-                    result_status=StageStatus.FAILED,
+                    status=StageStatus.FAILED,
                     error="boom",
                 )
             ]

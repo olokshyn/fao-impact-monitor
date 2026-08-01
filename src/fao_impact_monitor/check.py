@@ -7,7 +7,7 @@ import sys
 def main() -> None:
     commands = (
         ["ruff", "format", "."],
-        ["ruff", "check", "."],
+        ["ruff", "check", "--fix", "."],
         ["mypy", "."],
         ["pytest", "tests"],
     )
