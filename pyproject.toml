@@ -13,12 +13,15 @@ dependencies = [
     "numpy>=2.5.1",
     "pandas>=3.0.5",
     "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "scrapling[fetchers]>=0.4.12",
     "wbgapi>=1.0.14",
 ]
 
 [project.scripts]
 fao-impact-monitor = "fao_impact_monitor:main"
 check = "fao_impact_monitor.check:main"
+install-browsers = "fao_impact_monitor.data_lake.scrapling:ensure_chromium_main"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
@@ -52,4 +55,20 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "wbgapi.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scrapling"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scrapling.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "patchright"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "patchright.*"
 ignore_missing_imports = true

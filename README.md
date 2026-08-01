@@ -25,9 +25,12 @@ Install the project and its development tools into a local virtual environment:
 
 ```bash
 uv sync
+uv run install-browsers
 ```
 
 This creates `.venv` if needed and installs runtime plus `dev` dependencies (`ruff`, `mypy`, `pytest`).
+`install-browsers` downloads Chromium for Scrapling's browser fetcher (`uv` cannot run this as a post-install hook).
+`browser_fetch` also calls it automatically if Chromium is missing.
 
 ## Running
 
@@ -283,16 +286,14 @@ class MyStageResult(StageResult):
 class MyStage(Stage):
     name = MY_STAGE_NAME
 
-    async def get_version(self) -> StageVersion:
-        ...
+    async def get_version(self) -> StageVersion: ...
 
     async def run(
         self,
         document: Document,
         stage_params: dict[str, Any],
         prev_stages: list[StageResult],
-    ) -> StageResult:
-        ...
+    ) -> StageResult: ...
 ```
 
 ### Required tests
