@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 from beanie import PydanticObjectId
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from fao_impact_monitor.agent.pdf_crawl_agent import extract_page_urls
 from fao_impact_monitor.config import PdfCrawlConfig, get_config
 from fao_impact_monitor.data_lake.document import (
     Document,
@@ -32,7 +33,6 @@ from fao_impact_monitor.data_lake.stage import (
     StageStatus,
     StageVersion,
 )
-from fao_impact_monitor.data_lake.stages.pdf_crawl_agent import extract_page_urls
 
 logger = logging.getLogger(__name__)
 

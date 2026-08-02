@@ -40,6 +40,7 @@ def test_pdf_process_pipeline_starts_with_extract() -> None:
     assert steps_field.default_factory is not None
     steps = steps_field.default_factory()
     assert steps[0].stage_name == PDF_EXTRACT_STAGE_NAME
+    assert len(steps) >= 1
     name_default = PdfProcessPipeline.model_fields["name"].default
     assert name_default == PIPELINE_PDF_PROCESS
 

@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=2.5.1",
     "openai>=2.52.0",
     "pandas>=3.0.5",
+    "pycountry>=26.2.16",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "scrapling[fetchers]>=0.4.12",
@@ -95,6 +96,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "langgraph.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pycountry"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

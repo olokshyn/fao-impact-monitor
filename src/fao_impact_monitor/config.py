@@ -52,12 +52,23 @@ class PdfExtractConfig(BaseSettings):
     save_dir: Path = DATA_DIR / "pdf_markdown"
 
 
+class CountryDetectConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="COUNTRY_DETECT_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-luna"
+    max_agent_retries: int = 3
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
     aws_bedrock: AwsBedrockConfig = Field(default_factory=AwsBedrockConfig)
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
+    country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
 
 
 def get_config() -> Config:

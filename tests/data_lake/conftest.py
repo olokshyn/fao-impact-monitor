@@ -12,6 +12,9 @@ from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.stage import StageVersion
+from fao_impact_monitor.data_lake.stages.country_detect_stage import (
+    CountryDetectStageVersion,
+)
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import PdfCrawlStageVersion
 from fao_impact_monitor.data_lake.stages.pdf_extract_stage import PdfExtractStageVersion
 from tests.data_lake.mock_http_server import MockHttpServer, mock_http_server
@@ -94,6 +97,7 @@ def document_store(
                 StageVersion,
                 PdfCrawlStageVersion,
                 PdfExtractStageVersion,
+                CountryDetectStageVersion,
             ],
             skip_indexes=True,
         )

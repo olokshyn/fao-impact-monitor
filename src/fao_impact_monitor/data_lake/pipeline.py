@@ -1,4 +1,6 @@
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any
 
 from beanie import Document as BeanieDocument
@@ -7,12 +9,16 @@ from pydantic import BaseModel, Field
 
 from .document import Document
 from .stage import StageResult, StageStatus, get_stage
+from .stages.country_detect_stage import (
+    CHUNK_ITERATOR_PARAM,
+    COUNTRY_DETECT_STAGE_NAME,
+)
 from .stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
     PIPELINE_FOR_WEB_PARAM,
 )
-from .stages.pdf_extract_stage import PDF_EXTRACT_STAGE_NAME
+from .stages.pdf_extract_stage import PDF_EXTRACT_STAGE_NAME, PdfExtractStageResult
 
 
 class PipelineStep(BaseModel):
@@ -69,6 +75,37 @@ PIPELINE_PDF_CRAWL = "pdf_crawl"
 PIPELINE_PDF_PROCESS = "pdf_process"
 
 
+def extracted_pdf_chunk_iterator(prev_stages: list[StageResult]) -> Iterator[str]:
+    """Yield markdown text for each page from a completed pdf_extract result."""
+    extract = _resolve_pdf_extract(prev_stages)
+    if extract is None:
+        raise ValueError(
+            f"country_detect requires a completed {PDF_EXTRACT_STAGE_NAME} "
+            "result in previous stages"
+        )
+    for page_path in extract.page_paths:
+        path = Path(page_path)
+        if not path.is_file():
+            raise ValueError(f"pdf_extract page file not found: {page_path}")
+        yield path.read_text(encoding="utf-8")
+
+
+def _resolve_pdf_extract(
+    prev_stages: list[StageResult],
+) -> PdfExtractStageResult | None:
+    for result in reversed(prev_stages):
+        if result.name != PDF_EXTRACT_STAGE_NAME:
+            continue
+        if isinstance(result, PdfExtractStageResult):
+            extract = result
+        else:
+            extract = PdfExtractStageResult.model_validate(result.model_dump())
+        if extract.status != StageStatus.COMPLETED:
+            return None
+        return extract
+    return None
+
+
 class PdfCrawlPipeline(Pipeline):
     name: Annotated[str, Indexed(unique=True)] = PIPELINE_PDF_CRAWL
     steps: list[PipelineStep] = Field(
@@ -89,5 +126,9 @@ class PdfProcessPipeline(Pipeline):
     steps: list[PipelineStep] = Field(
         default_factory=lambda: [
             PipelineStep(stage_name=PDF_EXTRACT_STAGE_NAME, params={}),
+            PipelineStep(
+                stage_name=COUNTRY_DETECT_STAGE_NAME,
+                params={CHUNK_ITERATOR_PARAM: extracted_pdf_chunk_iterator},
+            ),
         ]
     )

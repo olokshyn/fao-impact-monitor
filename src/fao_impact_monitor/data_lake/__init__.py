@@ -2,8 +2,14 @@ from .document import Document, DocumentType, Relation, RelationSide, RelationTy
 from .documents import PdfDocument, WebPageDocument
 from .stage import Stage, StageResult, StageStatus, StageVersion
 from .stages import (
+    CHUNK_ITERATOR_PARAM,
+    COUNTRY_DETECT_STAGE_NAME,
     PDF_CRAWL_STAGE_NAME,
     PDF_EXTRACT_STAGE_NAME,
+    CountryDetection,
+    CountryDetectStage,
+    CountryDetectStageResult,
+    CountryDetectStageVersion,
     PdfCrawlStage,
     PdfCrawlStageResult,
     PdfCrawlStageVersion,
@@ -13,8 +19,14 @@ from .stages import (
 )
 
 __all__ = [
+    "CHUNK_ITERATOR_PARAM",
+    "COUNTRY_DETECT_STAGE_NAME",
     "PDF_CRAWL_STAGE_NAME",
     "PDF_EXTRACT_STAGE_NAME",
+    "CountryDetectStage",
+    "CountryDetectStageResult",
+    "CountryDetectStageVersion",
+    "CountryDetection",
     "Document",
     "DocumentType",
     "PdfCrawlStage",

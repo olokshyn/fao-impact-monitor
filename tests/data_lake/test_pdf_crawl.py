@@ -3,6 +3,10 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
 
+from fao_impact_monitor.agent.pdf_crawl_agent import (
+    PdfLinkCandidateList,
+    extract_page_urls,
+)
 from fao_impact_monitor.config import PdfCrawlConfig
 from fao_impact_monitor.data_lake.document import (
     Document,
@@ -13,10 +17,6 @@ from fao_impact_monitor.data_lake.document import (
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.stage import StageStatus, get_stage
-from fao_impact_monitor.data_lake.stages.pdf_crawl_agent import (
-    PdfLinkCandidateList,
-    extract_page_urls,
-)
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
