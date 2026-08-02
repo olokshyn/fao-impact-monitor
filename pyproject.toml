@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "asyncio>=4.0.0",
     "beanie>=2.1.0",
+    "docling>=2.117.0",
     "langchain>=1.3.14",
     "langchain-openai>=1.4.1",
     "langgraph>=1.2.10",
@@ -93,4 +94,28 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "langgraph.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "docling"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "docling.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "docling_core"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "docling_core.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pypdfium2"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pypdfium2.*"
 ignore_missing_imports = true

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Callable, Coroutine, Iterator
 from typing import Any, TypeVar
@@ -9,12 +7,13 @@ import pytest
 from beanie import init_beanie
 from mongomock_motor import AsyncMongoMockClient
 
-from fao_impact_monitor.config import PdfCrawlConfig
+from fao_impact_monitor.config import PdfCrawlConfig, PdfExtractConfig
 from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.stage import StageVersion
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import PdfCrawlStageVersion
+from fao_impact_monitor.data_lake.stages.pdf_extract_stage import PdfExtractStageVersion
 from tests.data_lake.mock_http_server import MockHttpServer, mock_http_server
 
 T = TypeVar("T")
@@ -54,6 +53,11 @@ def pdf_crawl_dirs(tmp_path: Any) -> PdfCrawlConfig:
 
 
 @pytest.fixture
+def pdf_extract_dirs(tmp_path: Any) -> PdfExtractConfig:
+    return PdfExtractConfig(save_dir=tmp_path / "pdf_markdown")
+
+
+@pytest.fixture
 def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
     """Dedicated loop so mongomock-motor and Beanie share one runtime per test."""
     loop = asyncio.new_event_loop()
@@ -89,6 +93,7 @@ def document_store(
                 PdfDocument,
                 StageVersion,
                 PdfCrawlStageVersion,
+                PdfExtractStageVersion,
             ],
             skip_indexes=True,
         )

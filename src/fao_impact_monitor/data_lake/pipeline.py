@@ -12,6 +12,7 @@ from .stages.pdf_crawl_stage import (
     PIPELINE_FOR_PDF_PARAM,
     PIPELINE_FOR_WEB_PARAM,
 )
+from .stages.pdf_extract_stage import PDF_EXTRACT_STAGE_NAME
 
 
 class PipelineStep(BaseModel):
@@ -85,4 +86,8 @@ class PdfCrawlPipeline(Pipeline):
 
 class PdfProcessPipeline(Pipeline):
     name: Annotated[str, Indexed(unique=True)] = PIPELINE_PDF_PROCESS
-    steps: list[PipelineStep] = Field(default_factory=list)
+    steps: list[PipelineStep] = Field(
+        default_factory=lambda: [
+            PipelineStep(stage_name=PDF_EXTRACT_STAGE_NAME, params={}),
+        ]
+    )

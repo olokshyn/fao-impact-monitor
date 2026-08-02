@@ -5,13 +5,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DATA_DIR = Path(__file__).parent.parent.parent / "fetched_data"
 
+_COMMON_SETTINGS = SettingsConfigDict(
+    env_file=".env",
+    env_file_encoding="utf-8",
+    extra="ignore",
+)
+
 
 class AwsBedrockConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AWS_BEDROCK_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
+        **_COMMON_SETTINGS,
     )
 
     api_key: SecretStr = SecretStr("")
@@ -26,9 +30,7 @@ class AwsBedrockConfig(BaseSettings):
 class PdfCrawlConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PDF_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
+        **_COMMON_SETTINGS,
     )
 
     max_url_depth: int = 10
@@ -41,15 +43,21 @@ class PdfCrawlConfig(BaseSettings):
     max_agent_retries: int = 3
 
 
-class Config(BaseSettings):
+class PdfExtractConfig(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
+        env_prefix="PDF_EXTRACT_",
+        **_COMMON_SETTINGS,
     )
+
+    save_dir: Path = DATA_DIR / "pdf_markdown"
+
+
+class Config(BaseSettings):
+    model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
     aws_bedrock: AwsBedrockConfig = Field(default_factory=AwsBedrockConfig)
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
+    pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
 
 
 def get_config() -> Config:

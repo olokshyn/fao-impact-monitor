@@ -192,7 +192,9 @@ class PdfCrawlStage(Stage):
                 pipeline_name=pipeline_for_pdf,
                 relations=list(document.relations),
             )
-            content_path = await _persist_content(pdf_doc, body, cfg.save_dir)
+            content_path = await _persist_content(
+                pdf_doc, body, cfg.save_dir, suffix=".pdf"
+            )
             result = PdfCrawlStageResult(
                 version_id=version_id,
                 status=StageStatus.COMPLETED,
@@ -208,7 +210,9 @@ class PdfCrawlStage(Stage):
             existing=existing,
             pipeline_for_web=pipeline_for_web,
         )
-        content_path = await _persist_content(seed_doc, body, cfg.web_page_save_dir)
+        content_path = await _persist_content(
+            seed_doc, body, cfg.web_page_save_dir, suffix=".html"
+        )
         seed_result = PdfCrawlStageResult(
             version_id=version_id,
             status=StageStatus.COMPLETED,
@@ -347,7 +351,9 @@ class PdfCrawlStage(Stage):
                         url=url,
                         pipeline_name=pipeline_for_pdf,
                     )
-                content_path = await _persist_content(pdf_doc, body, cfg.save_dir)
+                content_path = await _persist_content(
+                    pdf_doc, body, cfg.save_dir, suffix=".pdf"
+                )
                 result = PdfCrawlStageResult(
                     version_id=version_id,
                     status=StageStatus.COMPLETED,
@@ -374,7 +380,9 @@ class PdfCrawlStage(Stage):
                     url=url,
                     pipeline_name=pipeline_for_web,
                 )
-            content_path = await _persist_content(page_doc, body, cfg.web_page_save_dir)
+            content_path = await _persist_content(
+                page_doc, body, cfg.web_page_save_dir, suffix=".html"
+            )
             result = PdfCrawlStageResult(
                 version_id=version_id,
                 status=StageStatus.COMPLETED,
@@ -469,12 +477,14 @@ async def _persist_content(
     document: Document,
     body: bytes,
     directory: Path,
+    *,
+    suffix: str,
 ) -> str:
     if document.id is None:
         await document.insert()
     assert document.id is not None
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / str(document.id)
+    path = directory / f"{document.id}{suffix}"
     path.write_bytes(body)
     return str(path)
 

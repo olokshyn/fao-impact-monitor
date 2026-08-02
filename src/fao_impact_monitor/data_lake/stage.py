@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum, auto
@@ -56,7 +58,7 @@ class StageVersion(BeanieDocument):  # , metaclass=StageVersionMeta):
         class_id = "name"
 
 
-_STAGE_RESULT_REGISTRY: dict[str, type["StageResult"]] = {}
+_STAGE_RESULT_REGISTRY: dict[str, type[StageResult]] = {}
 
 
 class StageResultMeta(RegistryModelMeta):
@@ -79,7 +81,7 @@ class StageResult(ABC, BaseModel, metaclass=StageResultMeta):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
-_STAGE_REGISTRY: dict[str, type["Stage"]] = {}
+_STAGE_REGISTRY: dict[str, type[Stage]] = {}
 
 
 class StageMeta(RegistryMeta):
@@ -96,7 +98,7 @@ class Stage(ABC, metaclass=StageMeta):
     @abstractmethod
     async def run(
         self,
-        document: "Document",
+        document: Document,
         stage_params: dict[str, Any],
         prev_stages: list[StageResult],
     ) -> StageResult: ...

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -113,6 +111,7 @@ def test_unsaved_seed_pdf_saves_and_completes(
     assert result.status == StageStatus.COMPLETED
     assert isinstance(result, PdfCrawlStageResult)
     assert result.content_path is not None
+    assert result.content_path.endswith(".pdf")
     assert Path(result.content_path).read_bytes() == body
     _refresh(document_store)
     saved = document_store[seed.url]
@@ -208,6 +207,7 @@ def test_html_seed_creates_children_and_bidirectional_relations(
     assert result.status == StageStatus.COMPLETED
     assert isinstance(result, PdfCrawlStageResult)
     assert result.content_path is not None
+    assert result.content_path.endswith(".html")
     assert Path(result.content_path).exists()
 
     _refresh(document_store)
@@ -220,6 +220,15 @@ def test_html_seed_creates_children_and_bidirectional_relations(
     assert root.pipeline_name == PIPELINE_FOR_WEB
     assert page.pipeline_name == PIPELINE_FOR_WEB
     assert pdf.pipeline_name == PIPELINE_FOR_PDF
+
+    page_crawl = page.stage_results["pdf_crawl"][-1]
+    pdf_crawl = pdf.stage_results["pdf_crawl"][-1]
+    assert isinstance(page_crawl, PdfCrawlStageResult)
+    assert isinstance(pdf_crawl, PdfCrawlStageResult)
+    assert page_crawl.content_path is not None
+    assert pdf_crawl.content_path is not None
+    assert page_crawl.content_path.endswith(".html")
+    assert pdf_crawl.content_path.endswith(".pdf")
 
     assert extract_calls == [seed.url, child_page]
 

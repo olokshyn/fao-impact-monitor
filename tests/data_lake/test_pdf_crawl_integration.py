@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
@@ -148,6 +146,7 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
 
     assert result.status == StageStatus.COMPLETED
     assert result.content_path is not None
+    assert result.content_path.endswith(".html")
     assert Path(result.content_path).exists()
 
     sync_refresh = getattr(document_store, "sync_refresh", None)
@@ -175,6 +174,7 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
         assert isinstance(latest, PdfCrawlStageResult)
         assert latest.status == StageStatus.COMPLETED
         assert latest.content_path is not None
+        assert latest.content_path.endswith(".pdf")
         assert Path(latest.content_path).exists()
         assert Path(latest.content_path).read_bytes().startswith(b"%PDF")
 
