@@ -20,12 +20,13 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "scrapling[fetchers]>=0.4.12",
+    "typer>=0.26.8",
     "wbgapi>=1.0.14",
 ]
 
 [project.scripts]
 fao-impact-monitor = "fao_impact_monitor:main"
-check = "fao_impact_monitor.check:main"
+check = "fao_impact_monitor.check:app"
 install-browsers = "fao_impact_monitor.data_lake.scrapling:ensure_chromium_main"
 
 [build-system]

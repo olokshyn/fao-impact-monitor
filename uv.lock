@@ -692,6 +692,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "scrapling", extra = ["fetchers"] },
+    { name = "typer" },
     { name = "wbgapi" },
 ]
 
@@ -718,6 +719,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "scrapling", extras = ["fetchers"], specifier = ">=0.4.12" },
+    { name = "typer", specifier = ">=0.26.8" },
     { name = "wbgapi", specifier = ">=1.0.14" },
 ]
 
