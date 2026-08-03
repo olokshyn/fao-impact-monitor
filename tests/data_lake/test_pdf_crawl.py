@@ -8,6 +8,7 @@ from fao_impact_monitor.agent.pdf_crawl_agent import (
     extract_page_urls,
 )
 from fao_impact_monitor.config import PdfCrawlConfig
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import (
     Document,
     DocumentType,
@@ -16,7 +17,7 @@ from fao_impact_monitor.data_lake.document import (
 )
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
-from fao_impact_monitor.data_lake.stage import StageStatus, get_stage
+from fao_impact_monitor.data_lake.stage import get_stage
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
@@ -45,7 +46,7 @@ def _seed(
     return WebPageDocument(
         url=url,
         title=title,
-        pipeline_name="seed-caller-pipeline",
+        pipeline_statuses={"seed-caller-pipeline": Status.PENDING},
     )
 
 
@@ -76,7 +77,7 @@ def test_seed_already_completed_returns_early(
     seed = _seed()
     prior = PdfCrawlStageResult(
         version_id="v1",
-        status=StageStatus.COMPLETED,
+        status=Status.COMPLETED,
         content_path="/tmp/prior",
     )
     seed.stage_results = {PDF_CRAWL_STAGE_NAME: [prior]}
@@ -88,7 +89,7 @@ def test_seed_already_completed_returns_early(
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
 
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert isinstance(result, PdfCrawlStageResult)
     assert result.content_path == "/tmp/prior"
 
@@ -108,7 +109,7 @@ def test_unsaved_seed_pdf_saves_and_completes(
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
 
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert isinstance(result, PdfCrawlStageResult)
     assert result.content_path is not None
     assert result.content_path.endswith(".pdf")
@@ -117,7 +118,56 @@ def test_unsaved_seed_pdf_saves_and_completes(
     saved = document_store[seed.url]
     assert isinstance(saved, PdfDocument)
     assert saved.type == DocumentType.PDF
-    assert saved.pipeline_name == PIPELINE_FOR_PDF
+    assert saved.pipeline_status(PIPELINE_FOR_PDF) == Status.PENDING
+
+
+def test_incomplete_existing_seed_is_reprocessed(
+    document_store: dict[str, Document],
+    pdf_crawl_dirs: PdfCrawlConfig,
+    run_async: RunAsync[Any],
+) -> None:
+    """PENDING docs in Mongo are not treated as done; crawl runs again."""
+    seed = _seed()
+    seed.set_pipeline_status(PIPELINE_FOR_WEB, Status.PENDING)
+    run_async(seed.insert())
+    fetch_calls: list[str] = []
+
+    async def fetch(*, url: str) -> bytes:
+        fetch_calls.append(url)
+        return b"<!doctype html><html><body>ok</body></html>"
+
+    async def extract(
+        *,
+        page_url: str,
+        page_body: str,
+        max_urls: int,
+        max_retries: int,
+        model: Any = None,
+    ) -> list[str]:
+        del page_url, page_body, max_urls, max_retries, model
+        return []
+
+    stage = PdfCrawlStage(
+        fetch_fn=fetch,
+        extract_fn=extract,
+        config=pdf_crawl_dirs,
+    )
+    result = run_async(stage.run(seed, STAGE_PARAMS, []))
+    assert result.status == Status.COMPLETED
+    assert fetch_calls == [seed.url]
+    _refresh(document_store)
+    saved = document_store[seed.url]
+    assert _latest_or_none(saved) is not None
+
+
+def _latest_or_none(document: Document) -> PdfCrawlStageResult | None:
+    results = document.stage_results.get(PDF_CRAWL_STAGE_NAME)
+    if not results:
+        return None
+    latest = results[-1]
+    if isinstance(latest, PdfCrawlStageResult):
+        return latest
+    return PdfCrawlStageResult.model_validate(latest.model_dump())
 
 
 def test_saved_seed_with_pdf_body_fails(
@@ -134,7 +184,7 @@ def test_saved_seed_with_pdf_body_fails(
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
 
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert "already saved" in result.error
 
@@ -151,7 +201,7 @@ def test_non_html_non_pdf_seed_fails(
 
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     _refresh(document_store)
     assert seed.url not in document_store
 
@@ -204,7 +254,7 @@ def test_html_seed_creates_children_and_bidirectional_relations(
     )
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
 
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert isinstance(result, PdfCrawlStageResult)
     assert result.content_path is not None
     assert result.content_path.endswith(".html")
@@ -217,9 +267,9 @@ def test_html_seed_creates_children_and_bidirectional_relations(
     assert isinstance(root, WebPageDocument)
     assert isinstance(page, WebPageDocument)
     assert isinstance(pdf, PdfDocument)
-    assert root.pipeline_name == PIPELINE_FOR_WEB
-    assert page.pipeline_name == PIPELINE_FOR_WEB
-    assert pdf.pipeline_name == PIPELINE_FOR_PDF
+    assert root.pipeline_status(PIPELINE_FOR_WEB) == Status.PENDING
+    assert page.pipeline_status(PIPELINE_FOR_WEB) == Status.PENDING
+    assert pdf.pipeline_status(PIPELINE_FOR_PDF) == Status.PENDING
 
     page_crawl = page.stage_results["pdf_crawl"][-1]
     pdf_crawl = pdf.stage_results["pdf_crawl"][-1]
@@ -310,7 +360,7 @@ def test_shared_child_processed_once_with_both_parent_relations(
         config=pdf_crawl_dirs,
     )
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
 
     _refresh(document_store)
     assert fetch_counts[page3] == 1
@@ -333,12 +383,15 @@ def test_completed_child_gets_relations_only(
 ) -> None:
     seed = _seed("https://example.com/")
     child_url = "https://example.com/done.pdf"
-    child = PdfDocument(url=child_url, pipeline_name="test-pipeline")
+    child = PdfDocument(
+        url=child_url,
+        pipeline_statuses={"test-pipeline": Status.PENDING},
+    )
     child.stage_results = {
         PDF_CRAWL_STAGE_NAME: [
             PdfCrawlStageResult(
                 version_id="v1",
-                status=StageStatus.COMPLETED,
+                status=Status.COMPLETED,
                 content_path="/tmp/done.pdf",
             )
         ]
@@ -372,7 +425,7 @@ def test_completed_child_gets_relations_only(
         config=pdf_crawl_dirs,
     )
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
 
     _refresh(document_store)
     root = document_store[seed.url]
@@ -439,7 +492,7 @@ def test_fetch_error_on_seed_fails(
 
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert "network down" in result.error
 
@@ -456,7 +509,7 @@ def test_missing_pipeline_stage_params_fails(
 
     stage = PdfCrawlStage(fetch_fn=fetch, config=pdf_crawl_dirs)
     result = run_async(stage.run(seed, {}, []))
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert PIPELINE_FOR_WEB_PARAM in result.error
 

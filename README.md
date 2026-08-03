@@ -231,14 +231,38 @@ Every new document type must have unit tests under `./tests` (for example
 Stages transform documents in a pipeline. The base classes live in
 `src/fao_impact_monitor/data_lake/stage.py`:
 
-| Class          | Role                                              |
-| -------------- | ------------------------------------------------- |
-| `Stage`        | Runnable pipeline step, looked up by `name`       |
-| `StageResult`  | Result written onto the document after a run      |
-| `StageVersion` | Immutable provenance record for stage parameters  |
+| Class          | Role                                             |
+| -------------- | ------------------------------------------------ |
+| `Stage`        | Runnable pipeline step, looked up by `name`      |
+| `StageResult`  | Result written onto the document after a run     |
+| `StageVersion` | Immutable provenance record for stage parameters |
 
 Concrete `Stage` and `StageResult` subclasses are registered automatically by
 their `name` attribute (`get_stage(name)` resolves a `Stage`).
+
+### Pipeline philosophy
+
+A document tracks progress **per pipeline** via `Document.pipeline_statuses`
+(a map of pipeline name → `Status`). Pipelines adopt these rules:
+
+1. A document can participate in multiple pipelines with independent progress.
+   Status is always per pipeline, never a single global flag.
+2. Each document starts each pipeline in `PENDING`. `PENDING` means not
+   processed. Any code that finds a document in MongoDB must also require
+   `COMPLETED` for that pipeline (or stage) before treating it as done;
+   otherwise it must reprocess.
+3. A single `Pipeline.run()` call must drive the document to `COMPLETED` for
+   that pipeline (or `FAILED` if stages do not all complete). The document
+   still begins as `PENDING` / `RUNNING` because the call may fail or yield.
+4. A pipeline or stage may start from one seed and discover a tree of child
+   documents. `Pipeline.run()` on the root must process that whole tree before
+   returning.
+5. Before processing a document, a pipeline or stage looks it up in MongoDB. If
+   it exists and its status for that pipeline/stage is `COMPLETED`, it is not
+   reprocessed; any other status means it must be reprocessed. When a run
+   starts child pipelines (for example crawl enrolling PDFs into
+   `pdf_process`), that same `run()` cascades into those child pipelines and
+   finishes them before returning.
 
 ### Implement the stage
 
@@ -264,10 +288,10 @@ Minimal shape:
 from typing import Any
 
 from fao_impact_monitor.data_lake.document import Document
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
-    StageStatus,
     StageVersion,
 )
 
@@ -300,7 +324,7 @@ Every new stage must have unit tests under `./tests` (for example
 - Registration via `get_stage` (and `StageResult` registration by `name`).
 - `run` behaviour with a document, params, and previous stage results (mock
   external I/O; no network).
-- Failure / `StageStatus` handling where relevant.
+- Failure / `Status` handling where relevant.
 
 ## Use-case metrics and data sources
 
@@ -312,22 +336,22 @@ each metric. Metrics map to the `Metric` model in
 
 Top-level fields:
 
-| Field         | Meaning                                              |
-| ------------- | ---------------------------------------------------- |
-| `name`        | Use-case title                                       |
-| `description` | Short description of the event / scenario            |
+| Field         | Meaning                                                 |
+| ------------- | ------------------------------------------------------- |
+| `name`        | Use-case title                                          |
+| `description` | Short description of the event / scenario               |
 | `config`      | Optional flags (for example `use_all_fao_data_sources`) |
-| `metrics`     | List of livelihood metrics to estimate               |
+| `metrics`     | List of livelihood metrics to estimate                  |
 
 Each metric object:
 
-| Field          | Meaning                                                         |
-| -------------- | --------------------------------------------------------------- |
-| `name`         | Metric display name                                             |
-| `description`  | What the metric measures                                        |
-| `example`      | Example phrasing of an impact finding                           |
-| `unit`         | Unit for the metric (for example `%`)                           |
-| `data_sources` | List of source configs used to fetch evidence for this metric   |
+| Field          | Meaning                                                       |
+| -------------- | ------------------------------------------------------------- |
+| `name`         | Metric display name                                           |
+| `description`  | What the metric measures                                      |
+| `example`      | Example phrasing of an impact finding                         |
+| `unit`         | Unit for the metric (for example `%`)                         |
+| `data_sources` | List of source configs used to fetch evidence for this metric |
 
 Each entry in `data_sources` must include `source` matching a registered
 `DataSource.source` value (for example `"WorldBank"`). Additional keys are

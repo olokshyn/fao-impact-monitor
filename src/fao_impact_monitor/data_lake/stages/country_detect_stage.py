@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from fao_impact_monitor.agent.country_detect_agent import detect_countries
 from fao_impact_monitor.config import CountryDetectConfig, get_config
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
-    StageStatus,
     StageVersion,
 )
 
@@ -143,7 +143,7 @@ class CountryDetectStage(Stage):
 
         return CountryDetectStageResult(
             version_id=version_id,
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             detections=detections,
         )
 

@@ -5,9 +5,9 @@ from typing import Any, TypeVar
 import pytest
 
 from fao_impact_monitor.config import PdfExtractConfig
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
-from fao_impact_monitor.data_lake.stage import StageStatus
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PdfCrawlStageResult,
@@ -40,14 +40,14 @@ def test_pdf_extract_real_fao_el_nino_pdf(
 
     doc = PdfDocument(
         url="https://example.com/fao_el_nino_2026.pdf",
-        pipeline_name="pdf_process",
+        pipeline_statuses={"pdf_process": Status.PENDING},
     )
     run_async(doc.insert())
     assert doc.id is not None
     doc.stage_results[PDF_CRAWL_STAGE_NAME] = [
         PdfCrawlStageResult(
             version_id="crawl-v1",
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             content_path=str(_TEST_PDF),
         )
     ]
@@ -61,7 +61,7 @@ def test_pdf_extract_real_fao_el_nino_pdf(
             worker.shutdown()
             DoclingWorker._instance = None
 
-    assert result.status == StageStatus.COMPLETED, result.error
+    assert result.status == Status.COMPLETED, result.error
     assert isinstance(result, PdfExtractStageResult)
     assert result.title == _EXPECTED_TITLE
     assert result.num_pages == _EXPECTED_NUM_PAGES

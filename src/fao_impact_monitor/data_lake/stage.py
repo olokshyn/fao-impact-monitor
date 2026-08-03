@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Annotated, Any
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed
 from pydantic import BaseModel, Field
 
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.utils.meta_magic import (
     RegistryMeta,
     RegistryModelMeta,
@@ -17,13 +17,6 @@ from fao_impact_monitor.utils.meta_magic import (
 
 if TYPE_CHECKING:
     from fao_impact_monitor.data_lake.document import Document
-
-
-class StageStatus(StrEnum):
-    PENDING = auto()
-    RUNNING = auto()
-    COMPLETED = auto()
-    FAILED = auto()
 
 
 # _STAGE_VERSION_REGISTRY: dict[str, type["StageVersion"]] = {}
@@ -76,7 +69,7 @@ class StageResult(ABC, BaseModel, metaclass=StageResultMeta):
 
     name: str
     version_id: str  # StageVersion.version_id
-    status: StageStatus
+    status: Status
     error: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

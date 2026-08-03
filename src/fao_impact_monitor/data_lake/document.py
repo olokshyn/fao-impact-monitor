@@ -5,6 +5,7 @@ from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
 from pydantic import BaseModel, Field, computed_field, field_validator
 
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.stage import StageResult, get_stage_result_class
 from fao_impact_monitor.utils.meta_magic import get_class_id_value
 
@@ -42,8 +43,7 @@ class Document(BeanieDocument):
     ] = None
     title: str | None = None
     relations: list[Relation] = Field(default_factory=list)
-    pipeline_name: str
-    pipeline_completed: bool = False
+    pipeline_statuses: dict[str, Status] = Field(default_factory=dict)
     stage_results: dict[str, list[StageResult]] = Field(default_factory=dict)
 
     @field_validator("stage_results", mode="before")
@@ -73,6 +73,15 @@ class Document(BeanieDocument):
                 items.append(model_cls.model_validate(data))
             hydrated[key] = items
         return hydrated
+
+    def pipeline_status(self, pipeline_name: str) -> Status | None:
+        return self.pipeline_statuses.get(pipeline_name)
+
+    def is_pipeline_completed(self, pipeline_name: str) -> bool:
+        return self.pipeline_statuses.get(pipeline_name) == Status.COMPLETED
+
+    def set_pipeline_status(self, pipeline_name: str, status: Status) -> None:
+        self.pipeline_statuses[pipeline_name] = status
 
     @property
     def type(self) -> DocumentType:

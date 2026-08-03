@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 import pytest
 
 from fao_impact_monitor.config import PdfCrawlConfig, get_config
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import (
     Document,
     DocumentType,
@@ -13,7 +14,6 @@ from fao_impact_monitor.data_lake.document import (
 )
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.scrapling import fetch
-from fao_impact_monitor.data_lake.stage import StageStatus
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
@@ -136,7 +136,9 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
     pdf_crawl_dirs.max_urls_per_page = 10
 
     seed = WebPageDocument(
-        url=root_url, title="Root", pipeline_name="seed-caller-pipeline"
+        url=root_url,
+        title="Root",
+        pipeline_statuses={"seed-caller-pipeline": Status.PENDING},
     )
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -144,7 +146,7 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
     )
     result = run_async(stage.run(seed, STAGE_PARAMS, []))
 
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert result.content_path is not None
     assert result.content_path.endswith(".html")
     assert Path(result.content_path).exists()
@@ -163,16 +165,20 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
     assert "/page2" in docs_by_suffix
     assert "/page3" in docs_by_suffix
     for page_path in ("/", "/page1", "/page2", "/page3"):
-        assert docs_by_suffix[page_path].pipeline_name == PIPELINE_FOR_WEB
+        assert docs_by_suffix[page_path].pipeline_status(PIPELINE_FOR_WEB) == (
+            Status.PENDING
+        )
     for pdf_path in ("/pdf1", "/pdf2", "/pdf3", "/pdf4"):
         assert pdf_path in docs_by_suffix, (
             f"missing {pdf_path} in {list(docs_by_suffix)}"
         )
         assert docs_by_suffix[pdf_path].type == DocumentType.PDF
-        assert docs_by_suffix[pdf_path].pipeline_name == PIPELINE_FOR_PDF
+        assert docs_by_suffix[pdf_path].pipeline_status(PIPELINE_FOR_PDF) == (
+            Status.PENDING
+        )
         latest = docs_by_suffix[pdf_path].stage_results["pdf_crawl"][-1]
         assert isinstance(latest, PdfCrawlStageResult)
-        assert latest.status == StageStatus.COMPLETED
+        assert latest.status == Status.COMPLETED
         assert latest.content_path is not None
         assert latest.content_path.endswith(".pdf")
         assert Path(latest.content_path).exists()
@@ -190,7 +196,7 @@ def test_pdf_crawl_topology_with_bedrock_and_mock_server(
     # page3 is discovered from both page1 and page2 but processed only once.
     page3_results = page3.stage_results.get(PDF_CRAWL_STAGE_NAME, [])
     assert len(page3_results) == 1
-    assert page3_results[0].status == StageStatus.COMPLETED
+    assert page3_results[0].status == Status.COMPLETED
 
     assert _has_edge(root, page1)
     assert _has_edge(root, pdf2)

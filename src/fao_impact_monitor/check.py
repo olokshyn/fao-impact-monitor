@@ -14,6 +14,9 @@ app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 @app.command()
 def main(
+    no_tests: Annotated[
+        bool, typer.Option("--no-tests", help="Do not run tests.")
+    ] = False,
     test_stage: Annotated[
         str | None,
         typer.Option(
@@ -23,12 +26,13 @@ def main(
     ] = None,
 ) -> None:
     pytest_command = _pytest_command(test_stage)
-    commands = (
+    commands = [
         ["ruff", "format", "."],
         ["ruff", "check", "--fix", "."],
         ["mypy", "."],
-        pytest_command,
-    )
+    ]
+    if not no_tests:
+        commands.append(pytest_command)
     for command in commands:
         print(f"+ {' '.join(command)}", flush=True)
         result = subprocess.run(command, check=False)

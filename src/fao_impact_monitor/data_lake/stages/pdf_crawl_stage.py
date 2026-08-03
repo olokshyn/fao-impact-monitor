@@ -13,6 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from fao_impact_monitor.agent.pdf_crawl_agent import extract_page_urls
 from fao_impact_monitor.config import PdfCrawlConfig, get_config
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import (
     Document,
     DocumentType,
@@ -30,7 +31,6 @@ from fao_impact_monitor.data_lake.scrapling import (
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
-    StageStatus,
     StageVersion,
 )
 
@@ -132,23 +132,26 @@ class PdfCrawlStage(Stage):
         except ValueError as exc:
             return PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=str(exc),
             )
 
         if document.type != DocumentType.WEB_PAGE:
             return PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=f"pdf_crawl requires a WEB_PAGE seed, got {document.type}",
             )
 
         existing = await _find_by_url(document.url)
-        if existing is not None and _has_completed_pdf_crawl(existing):
+        if existing is not None and (
+            existing.is_pipeline_completed(pipeline_for_web)
+            or _has_completed_pdf_crawl(existing)
+        ):
             prior = _latest_pdf_crawl_result(existing)
             return PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.COMPLETED,
+                status=Status.COMPLETED,
                 content_path=prior.content_path if prior else None,
             )
 
@@ -158,7 +161,7 @@ class PdfCrawlStage(Stage):
             logger.exception("Failed to fetch seed URL %s", document.url)
             return PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=f"Failed to fetch seed URL: {exc}",
             )
 
@@ -166,7 +169,7 @@ class PdfCrawlStage(Stage):
         if kind == "other":
             return PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error="Seed URL content is neither PDF nor HTML",
             )
 
@@ -174,7 +177,7 @@ class PdfCrawlStage(Stage):
             if existing is not None:
                 return PdfCrawlStageResult(
                     version_id=version_id,
-                    status=StageStatus.FAILED,
+                    status=Status.FAILED,
                     error=(
                         "Seed URL is already saved in Mongo but fetched content "
                         "is PDF; refusing to convert document type"
@@ -183,13 +186,13 @@ class PdfCrawlStage(Stage):
             if len(body) > cfg.max_pdf_size:
                 return PdfCrawlStageResult(
                     version_id=version_id,
-                    status=StageStatus.FAILED,
+                    status=Status.FAILED,
                     error=f"PDF exceeds max_pdf_size ({cfg.max_pdf_size} bytes)",
                 )
             pdf_doc = PdfDocument(
                 url=document.url,
                 title=document.title,
-                pipeline_name=pipeline_for_pdf,
+                pipeline_statuses={pipeline_for_pdf: Status.PENDING},
                 relations=list(document.relations),
             )
             content_path = await _persist_content(
@@ -197,7 +200,7 @@ class PdfCrawlStage(Stage):
             )
             result = PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.COMPLETED,
+                status=Status.COMPLETED,
                 content_path=content_path,
             )
             _append_stage_result(pdf_doc, result)
@@ -215,7 +218,7 @@ class PdfCrawlStage(Stage):
         )
         seed_result = PdfCrawlStageResult(
             version_id=version_id,
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             content_path=content_path,
         )
         _append_stage_result(seed_doc, seed_result)
@@ -235,7 +238,7 @@ class PdfCrawlStage(Stage):
             pipeline_for_web=pipeline_for_web,
             pipeline_for_pdf=pipeline_for_pdf,
         )
-        # Refresh seed result after BFS may have updated relations.
+        # Refresh seed after BFS may have updated relations.
         await seed_doc.save()
         return seed_result
 
@@ -294,7 +297,9 @@ class PdfCrawlStage(Stage):
             absolute = urljoin(parent.url, raw_url)
             if absolute in visited:
                 existing = await _find_by_url(absolute)
-                if existing is not None and _has_completed_pdf_crawl(existing):
+                if existing is not None and _is_crawl_done(
+                    existing, pipeline_for_web=pipeline_for_web
+                ):
                     await _link_bidirectional(parent, existing)
                 else:
                     parents_by_url.setdefault(absolute, []).append(parent)
@@ -318,7 +323,9 @@ class PdfCrawlStage(Stage):
 
             parents = parents_by_url.pop(url, [])
             existing = await _find_by_url(url)
-            if existing is not None and _has_completed_pdf_crawl(existing):
+            if existing is not None and _is_crawl_done(
+                existing, pipeline_for_web=pipeline_for_web
+            ):
                 for parent in parents:
                     await _link_bidirectional(parent, existing)
                 continue
@@ -346,17 +353,18 @@ class PdfCrawlStage(Stage):
                     continue
                 if existing is not None and existing.type == DocumentType.PDF:
                     pdf_doc = existing
+                    _enroll_pipeline(pdf_doc, pipeline_for_pdf)
                 else:
                     pdf_doc = PdfDocument(
                         url=url,
-                        pipeline_name=pipeline_for_pdf,
+                        pipeline_statuses={pipeline_for_pdf: Status.PENDING},
                     )
                 content_path = await _persist_content(
                     pdf_doc, body, cfg.save_dir, suffix=".pdf"
                 )
                 result = PdfCrawlStageResult(
                     version_id=version_id,
-                    status=StageStatus.COMPLETED,
+                    status=Status.COMPLETED,
                     content_path=content_path,
                 )
                 _append_stage_result(pdf_doc, result)
@@ -375,17 +383,18 @@ class PdfCrawlStage(Stage):
                 continue
             if existing is not None:
                 page_doc = existing
+                _enroll_pipeline(page_doc, pipeline_for_web)
             else:
                 page_doc = WebPageDocument(
                     url=url,
-                    pipeline_name=pipeline_for_web,
+                    pipeline_statuses={pipeline_for_web: Status.PENDING},
                 )
             content_path = await _persist_content(
                 page_doc, body, cfg.web_page_save_dir, suffix=".html"
             )
             result = PdfCrawlStageResult(
                 version_id=version_id,
-                status=StageStatus.COMPLETED,
+                status=Status.COMPLETED,
                 content_path=content_path,
             )
             _append_stage_result(page_doc, result)
@@ -430,7 +439,21 @@ async def _find_by_url(url: str) -> Document | None:
 
 def _has_completed_pdf_crawl(document: Document) -> bool:
     result = _latest_pdf_crawl_result(document)
-    return result is not None and result.status == StageStatus.COMPLETED
+    return result is not None and result.status == Status.COMPLETED
+
+
+def _is_crawl_done(document: Document, *, pipeline_for_web: str) -> bool:
+    """Skip re-crawl only when the document is fully done for crawl purposes."""
+    if document.type == DocumentType.WEB_PAGE and document.is_pipeline_completed(
+        pipeline_for_web
+    ):
+        return True
+    return _has_completed_pdf_crawl(document)
+
+
+def _enroll_pipeline(document: Document, pipeline_name: str) -> None:
+    if pipeline_name not in document.pipeline_statuses:
+        document.set_pipeline_status(pipeline_name, Status.PENDING)
 
 
 def _latest_pdf_crawl_result(document: Document) -> PdfCrawlStageResult | None:
@@ -458,15 +481,17 @@ async def _ensure_web_page(
             raise TypeError(
                 f"Expected WEB_PAGE for HTML seed, found {existing.type} at {seed.url}"
             )
-        return cast(WebPageDocument, existing)
+        page = cast(WebPageDocument, existing)
+        _enroll_pipeline(page, pipeline_for_web)
+        return page
     if isinstance(seed, WebPageDocument) and seed.id is None:
-        seed.pipeline_name = pipeline_for_web
+        _enroll_pipeline(seed, pipeline_for_web)
         await seed.insert()
         return seed
     page = WebPageDocument(
         url=seed.url,
         title=seed.title,
-        pipeline_name=pipeline_for_web,
+        pipeline_statuses={pipeline_for_web: Status.PENDING},
         relations=list(seed.relations),
     )
     await page.insert()

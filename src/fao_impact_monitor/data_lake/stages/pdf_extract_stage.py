@@ -15,11 +15,11 @@ from typing import Any
 from pydantic import Field
 
 from fao_impact_monitor.config import PdfExtractConfig, get_config
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document, DocumentType
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
-    StageStatus,
     StageVersion,
 )
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
@@ -186,7 +186,7 @@ def _process_job(
 
     return PdfExtractStageResult(
         version_id=job.version_id,
-        status=StageStatus.COMPLETED,
+        status=Status.COMPLETED,
         title=title,
         num_pages=num_pages,
         page_paths=page_paths,
@@ -276,7 +276,7 @@ class PdfExtractStage(Stage):
         if document.type != DocumentType.PDF:
             return PdfExtractStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=f"pdf_extract requires a PDF document, got {document.type}",
             )
 
@@ -284,7 +284,7 @@ class PdfExtractStage(Stage):
         if crawl_path is None:
             return PdfExtractStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error="Missing completed pdf_crawl content_path on document",
             )
 
@@ -292,14 +292,14 @@ class PdfExtractStage(Stage):
         if not pdf_path.is_file():
             return PdfExtractStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=f"PDF file not found: {pdf_path}",
             )
 
         if document.id is None:
             return PdfExtractStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error="PDF document must be saved before pdf_extract",
             )
 
@@ -315,11 +315,11 @@ class PdfExtractStage(Stage):
             logger.exception("pdf_extract failed for %s", document.url)
             return PdfExtractStageResult(
                 version_id=version_id,
-                status=StageStatus.FAILED,
+                status=Status.FAILED,
                 error=str(exc),
             )
 
-        if result.status == StageStatus.COMPLETED and result.title:
+        if result.status == Status.COMPLETED and result.title:
             document.title = result.title
         return result
 
@@ -355,6 +355,6 @@ def _resolve_crawl_content_path(document: Document) -> str | None:
         crawl = latest
     else:
         crawl = PdfCrawlStageResult.model_validate(latest.model_dump())
-    if crawl.status != StageStatus.COMPLETED or not crawl.content_path:
+    if crawl.status != Status.COMPLETED or not crawl.content_path:
         return None
     return crawl.content_path

@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from fao_impact_monitor.config import CountryDetectConfig
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.pipeline import (
@@ -18,7 +19,6 @@ from fao_impact_monitor.data_lake.pipeline import (
 )
 from fao_impact_monitor.data_lake.stage import (
     StageResult,
-    StageStatus,
     get_stage,
     get_stage_result_class,
 )
@@ -36,7 +36,10 @@ from fao_impact_monitor.data_lake.stages.pdf_extract_stage import (
 
 
 def _pdf(url: str) -> PdfDocument:
-    return PdfDocument(url=url, pipeline_name="pdf_process")
+    return PdfDocument(
+        url=url,
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
 
 
 def _params(
@@ -79,7 +82,7 @@ def test_country_detection_xor_invariant() -> None:
 def _extract_result(page_paths: list[str]) -> PdfExtractStageResult:
     return PdfExtractStageResult(
         version_id="extract-v1",
-        status=StageStatus.COMPLETED,
+        status=Status.COMPLETED,
         title="Sample",
         num_pages=len(page_paths),
         page_paths=page_paths,
@@ -119,7 +122,7 @@ def test_extracted_pdf_chunk_iterator_reads_page_paths(
         )
     )
     assert isinstance(result, CountryDetectStageResult)
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert seen == ["Farmers in Kenya.", "Markets in Uganda."]
     assert len(result.detections) == 2
     assert result.detections[0].countries_iso3 == ["KEN"]
@@ -155,7 +158,7 @@ def test_result_length_matches_chunk_iterator(
     )
     result = run_async(stage.run(doc, _params(chunk_iterator), []))
     assert isinstance(result, CountryDetectStageResult)
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert len(result.detections) == 3
     assert result.detections[2].countries_iso3 == []
     assert result.detections[2].detections == []
@@ -185,7 +188,7 @@ def test_per_chunk_error_shape(
     )
     result = run_async(stage.run(doc, _params(chunk_iterator), []))
     assert isinstance(result, CountryDetectStageResult)
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert len(result.detections) == 2
     assert result.detections[0].error is None
     assert result.detections[0].countries_iso3 == ["KEN"]
@@ -238,7 +241,7 @@ def test_failed_extract_raises(
     doc = _pdf("https://example.com/f.pdf")
     prev = PdfExtractStageResult(
         version_id="extract-v1",
-        status=StageStatus.FAILED,
+        status=Status.FAILED,
         error="docling exploded",
     )
     stage = CountryDetectStage(config=CountryDetectConfig())

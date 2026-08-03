@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from fao_impact_monitor.config import PdfExtractConfig
+from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document, DocumentType
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
@@ -11,7 +12,6 @@ from fao_impact_monitor.data_lake.pipeline import (
     PdfProcessPipeline,
 )
 from fao_impact_monitor.data_lake.stage import (
-    StageStatus,
     get_stage,
     get_stage_result_class,
 )
@@ -55,13 +55,16 @@ def test_extract_happy_path_writes_md_and_sets_title(
     pdf_file = tmp_path / "doc.pdf"
     pdf_file.write_bytes(b"%PDF-1.4\nfake")
 
-    doc = PdfDocument(url="https://example.com/report.pdf", pipeline_name="pdf_process")
+    doc = PdfDocument(
+        url="https://example.com/report.pdf",
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
     run_async(doc.insert())
     assert doc.id is not None
     doc.stage_results[PDF_CRAWL_STAGE_NAME] = [
         PdfCrawlStageResult(
             version_id="crawl-v1",
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             content_path=str(pdf_file),
         )
     ]
@@ -82,7 +85,7 @@ def test_extract_happy_path_writes_md_and_sets_title(
         page2.write_text("Page two table", encoding="utf-8")
         return PdfExtractStageResult(
             version_id=version_id,
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             title="Report Title",
             num_pages=2,
             page_paths=[str(page1), str(page2)],
@@ -91,7 +94,7 @@ def test_extract_happy_path_writes_md_and_sets_title(
     stage = PdfExtractStage(config=pdf_extract_dirs, submit_fn=submit)
     result = run_async(stage.run(doc, {}, []))
 
-    assert result.status == StageStatus.COMPLETED
+    assert result.status == Status.COMPLETED
     assert isinstance(result, PdfExtractStageResult)
     assert result.title == "Report Title"
     assert result.num_pages == 2
@@ -111,13 +114,16 @@ def test_extract_rejects_non_pdf(
     run_async: RunAsync[Any],
 ) -> None:
     del document_store
-    page = WebPageDocument(url="https://example.com/", pipeline_name="pdf_crawl")
+    page = WebPageDocument(
+        url="https://example.com/",
+        pipeline_statuses={"pdf_crawl": Status.PENDING},
+    )
     run_async(page.insert())
 
     stage = PdfExtractStage(config=pdf_extract_dirs, submit_fn=_unused_submit)
     result = run_async(stage.run(page, {}, []))
 
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert "PDF" in result.error
     assert page.type == DocumentType.WEB_PAGE
@@ -129,13 +135,16 @@ def test_extract_missing_crawl_path(
     run_async: RunAsync[Any],
 ) -> None:
     del document_store
-    doc = PdfDocument(url="https://example.com/a.pdf", pipeline_name="pdf_process")
+    doc = PdfDocument(
+        url="https://example.com/a.pdf",
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
     run_async(doc.insert())
 
     stage = PdfExtractStage(config=pdf_extract_dirs, submit_fn=_unused_submit)
     result = run_async(stage.run(doc, {}, []))
 
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert "content_path" in result.error
 
@@ -148,12 +157,15 @@ def test_extract_missing_pdf_file(
 ) -> None:
     del document_store
     missing = tmp_path / "gone.pdf"
-    doc = PdfDocument(url="https://example.com/b.pdf", pipeline_name="pdf_process")
+    doc = PdfDocument(
+        url="https://example.com/b.pdf",
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
     run_async(doc.insert())
     doc.stage_results[PDF_CRAWL_STAGE_NAME] = [
         PdfCrawlStageResult(
             version_id="crawl-v1",
-            status=StageStatus.COMPLETED,
+            status=Status.COMPLETED,
             content_path=str(missing),
         )
     ]
@@ -161,7 +173,7 @@ def test_extract_missing_pdf_file(
     stage = PdfExtractStage(config=pdf_extract_dirs, submit_fn=_unused_submit)
     result = run_async(stage.run(doc, {}, []))
 
-    assert result.status == StageStatus.FAILED
+    assert result.status == Status.FAILED
     assert result.error is not None
     assert "not found" in result.error
 

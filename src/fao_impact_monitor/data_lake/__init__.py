@@ -1,6 +1,7 @@
+from .common import Status
 from .document import Document, DocumentType, Relation, RelationSide, RelationType
 from .documents import PdfDocument, WebPageDocument
-from .stage import Stage, StageResult, StageStatus, StageVersion
+from .stage import Stage, StageResult, StageVersion
 from .stages import (
     CHUNK_ITERATOR_PARAM,
     COUNTRY_DETECT_STAGE_NAME,
@@ -41,7 +42,7 @@ __all__ = [
     "RelationType",
     "Stage",
     "StageResult",
-    "StageStatus",
     "StageVersion",
+    "Status",
     "WebPageDocument",
 ]
