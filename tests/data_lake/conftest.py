@@ -6,10 +6,12 @@ import mongomock
 import pytest
 from beanie import init_beanie
 from mongomock_motor import AsyncMongoMockClient
+from pydantic import SecretStr
 
-from fao_impact_monitor.config import PdfCrawlConfig, PdfExtractConfig
+from fao_impact_monitor.config import PdfCrawlConfig, PdfExtractConfig, TellusConfig
 from fao_impact_monitor.data_lake.document import Document
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
+from fao_impact_monitor.data_lake.documents.tellus_document import TellusDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.stage import StageVersion
 from fao_impact_monitor.data_lake.stages.country_detect_stage import (
@@ -17,6 +19,9 @@ from fao_impact_monitor.data_lake.stages.country_detect_stage import (
 )
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import PdfCrawlStageVersion
 from fao_impact_monitor.data_lake.stages.pdf_extract_stage import PdfExtractStageVersion
+from fao_impact_monitor.data_lake.stages.tellus_document_fetch_stage import (
+    TellusDocumentFetchStageVersion,
+)
 from tests.data_lake.mock_http_server import MockHttpServer, mock_http_server
 
 T = TypeVar("T")
@@ -61,6 +66,14 @@ def pdf_extract_dirs(tmp_path: Any) -> PdfExtractConfig:
 
 
 @pytest.fixture
+def tellus_dirs(tmp_path: Any) -> TellusConfig:
+    return TellusConfig(
+        bearer_token=SecretStr("test-token"),
+        save_dir=tmp_path / "tellus",
+    )
+
+
+@pytest.fixture
 def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
     """Dedicated loop so mongomock-motor and Beanie share one runtime per test."""
     loop = asyncio.new_event_loop()
@@ -94,9 +107,11 @@ def document_store(
                 Document,
                 WebPageDocument,
                 PdfDocument,
+                TellusDocument,
                 StageVersion,
                 PdfCrawlStageVersion,
                 PdfExtractStageVersion,
+                TellusDocumentFetchStageVersion,
                 CountryDetectStageVersion,
             ],
             skip_indexes=True,
@@ -109,7 +124,8 @@ def document_store(
             self.clear()
             pages = await WebPageDocument.find_all().to_list()
             pdfs = await PdfDocument.find_all().to_list()
-            for doc in (*pages, *pdfs):
+            tellus_docs = await TellusDocument.find_all().to_list()
+            for doc in (*pages, *pdfs, *tellus_docs):
                 self[doc.url] = doc
 
         def sync_refresh(self) -> None:

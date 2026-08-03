@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from fao_impact_monitor.data_lake.document import Document
+from fao_impact_monitor.data_lake.common import Status
+from fao_impact_monitor.data_lake.document import Document, RelationSide, RelationType
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
 from fao_impact_monitor.data_lake.pipeline import Pipeline, PipelineStep
 from fao_impact_monitor.data_lake.stage import (
@@ -13,7 +14,6 @@ from fao_impact_monitor.data_lake.stage import (
     _STAGE_RESULT_REGISTRY,
     Stage,
     StageResult,
-    StageStatus,
     StageVersion,
 )
 
@@ -21,18 +21,18 @@ from fao_impact_monitor.data_lake.stage import (
 class MockAResult(StageResult):
     name: str = "mock_a"
     value: str = ""
-    status: StageStatus = StageStatus.COMPLETED
+    status: Status = Status.COMPLETED
 
 
 class MockBResult(StageResult):
     name: str = "mock_b"
     value: str = ""
-    status: StageStatus = StageStatus.COMPLETED
+    status: Status = Status.COMPLETED
 
 
 class MockFailResult(StageResult):
     name: str = "mock_fail"
-    status: StageStatus = StageStatus.FAILED
+    status: Status = Status.FAILED
 
 
 class MockAStage(Stage):
@@ -91,21 +91,65 @@ class MockFailStage(Stage):
         return MockFailResult(version_id="fail-v1", error="stage failed")
 
 
+class MockChildResult(StageResult):
+    name: str = "mock_child"
+    status: Status = Status.COMPLETED
+
+
+class MockChildStage(Stage):
+    name = "mock_child"
+    calls: ClassVar[list[str]] = []
+
+    async def get_version(self) -> StageVersion:
+        raise NotImplementedError
+
+    async def run(
+        self,
+        document: Document,
+        stage_params: dict[str, Any],
+        prev_stages: list[StageResult],
+    ) -> StageResult:
+        del stage_params, prev_stages
+        MockChildStage.calls.append(document.url)
+        return MockChildResult(version_id="child-v1")
+
+
 @pytest.fixture(autouse=True)
 def _reset_mock_stage_calls() -> Iterator[None]:
     MockAStage.calls = []
     MockBStage.calls = []
     MockFailStage.calls = []
+    MockChildStage.calls = []
     yield
+
+
+@pytest.fixture(autouse=True)
+def _stub_mongo_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _no_doc_by_url(_url: str) -> Document | None:
+        return None
+
+    async def _no_doc_by_id(_document_id: Any, _document_type: Any) -> Document | None:
+        return None
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline._find_document_by_url",
+        _no_doc_by_url,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline._find_document_by_id",
+        _no_doc_by_id,
+    )
 
 
 def _make_document(
     stage_results: dict[str, list[StageResult]] | None = None,
+    *,
+    pipeline_statuses: dict[str, Status] | None = None,
 ) -> tuple[WebPageDocument, AsyncMock]:
     doc = WebPageDocument.model_construct(
         title="Example",
         url="https://example.com/doc",
-        pipeline_name="test-pipeline",
+        pipeline_statuses=pipeline_statuses if pipeline_statuses is not None else {},
         stage_results=stage_results if stage_results is not None else {},
         relations=[],
     )
@@ -114,10 +158,10 @@ def _make_document(
     return doc, save
 
 
-def _make_pipeline(*steps: PipelineStep) -> Pipeline:
+def _make_pipeline(*steps: PipelineStep, name: str = "test-pipeline") -> Pipeline:
     return cast(
         Pipeline,
-        Pipeline.model_construct(name="test-pipeline", steps=list(steps)),
+        Pipeline.model_construct(name=name, steps=list(steps)),
     )
 
 
@@ -181,7 +225,7 @@ def test_is_completed_uses_latest_result_only() -> None:
                 MockAResult(
                     version_id="a-v2",
                     value="bad",
-                    status=StageStatus.FAILED,
+                    status=Status.FAILED,
                     error="later failure",
                 ),
             ]
@@ -205,7 +249,8 @@ def test_run_executes_stages_in_order_and_saves() -> None:
     assert (
         cast(MockBResult, document.stage_results["mock_b"][0]).value == "first:second"
     )
-    assert save.await_count == 2
+    assert document.pipeline_status("test-pipeline") == Status.COMPLETED
+    assert save.await_count >= 2
     assert pipeline.is_completed(document) is True
 
     assert len(MockAStage.calls) == 1
@@ -216,6 +261,27 @@ def test_run_executes_stages_in_order_and_saves() -> None:
     assert MockBStage.calls[0][0] == {"tag": "second"}
     assert len(MockBStage.calls[0][1]) == 1
     assert MockBStage.calls[0][1][0].name == "mock_a"
+
+
+def test_run_skips_when_pipeline_completed(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = _make_pipeline(PipelineStep(stage_name="mock_a", params={"tag": "x"}))
+    document, save = _make_document(
+        pipeline_statuses={"test-pipeline": Status.COMPLETED}
+    )
+
+    async def _find(url: str) -> Document | None:
+        assert url == document.url
+        return document
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline._find_document_by_url",
+        _find,
+    )
+
+    asyncio.run(pipeline.run(document))
+
+    assert MockAStage.calls == []
+    assert save.await_count == 0
 
 
 def test_run_skips_completed_stages() -> None:
@@ -235,7 +301,8 @@ def test_run_skips_completed_stages() -> None:
     assert (
         cast(MockBResult, document.stage_results["mock_b"][0]).value == "cached:second"
     )
-    assert save.await_count == 1
+    assert document.pipeline_status("test-pipeline") == Status.COMPLETED
+    assert save.await_count >= 1
 
 
 def test_run_retries_failed_stage() -> None:
@@ -248,7 +315,7 @@ def test_run_retries_failed_stage() -> None:
                 MockAResult(
                     version_id="a-v0",
                     value="old",
-                    status=StageStatus.FAILED,
+                    status=Status.FAILED,
                     error="boom",
                 )
             ]
@@ -260,8 +327,9 @@ def test_run_retries_failed_stage() -> None:
     assert len(MockAStage.calls) == 1
     assert len(document.stage_results["mock_a"]) == 2
     latest = cast(MockAResult, document.stage_results["mock_a"][-1])
-    assert latest.status == StageStatus.COMPLETED
+    assert latest.status == Status.COMPLETED
     assert latest.value == "retry"
+    assert document.pipeline_status("test-pipeline") == Status.COMPLETED
 
 
 def test_run_continues_after_failed_stage_with_truncated_prev_results() -> None:
@@ -276,8 +344,79 @@ def test_run_continues_after_failed_stage_with_truncated_prev_results() -> None:
     assert len(MockFailStage.calls) == 1
     assert len(MockBStage.calls) == 1
     assert MockBStage.calls[0][1] == []
-    assert document.stage_results["mock_fail"][-1].status == StageStatus.FAILED
+    assert document.stage_results["mock_fail"][-1].status == Status.FAILED
     assert (
         cast(MockBResult, document.stage_results["mock_b"][-1]).value == ":after-fail"
     )
     assert pipeline.is_completed(document) is False
+    assert document.pipeline_status("test-pipeline") == Status.FAILED
+
+
+def test_run_cascades_to_child_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    parent_pipeline = _make_pipeline(
+        PipelineStep(stage_name="mock_a", params={"tag": "parent"}),
+        name="parent-pipeline",
+    )
+    child_pipeline = _make_pipeline(
+        PipelineStep(stage_name="mock_child", params={}),
+        name="child-pipeline",
+    )
+
+    def _get_pipeline(name: str) -> Pipeline:
+        assert name == "child-pipeline"
+        return child_pipeline
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline.get_pipeline",
+        _get_pipeline,
+    )
+
+    parent, parent_save = _make_document()
+    child, child_save = _make_document(
+        pipeline_statuses={"child-pipeline": Status.PENDING},
+    )
+    child.url = "https://example.com/child"
+    from beanie import PydanticObjectId
+
+    from fao_impact_monitor.data_lake.document import DocumentType, Relation
+
+    child_id = PydanticObjectId()
+    object.__setattr__(child, "id", child_id)
+    parent.relations = [
+        Relation(
+            type=RelationType.URL_LINK,
+            side=RelationSide.TO,
+            d_id=child_id,
+            d_type=DocumentType.WEB_PAGE,
+        )
+    ]
+
+    async def _find_url(url: str) -> Document | None:
+        if url == parent.url:
+            return parent
+        if url == child.url:
+            return child
+        return None
+
+    async def _find_id(document_id: Any, _document_type: Any) -> Document | None:
+        if document_id == child_id:
+            return child
+        return None
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline._find_document_by_url",
+        _find_url,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.pipeline._find_document_by_id",
+        _find_id,
+    )
+
+    asyncio.run(parent_pipeline.run(parent))
+
+    assert MockAStage.calls
+    assert MockChildStage.calls == [child.url]
+    assert parent.pipeline_status("parent-pipeline") == Status.COMPLETED
+    assert child.pipeline_status("child-pipeline") == Status.COMPLETED
+    assert parent_save.await_count >= 1
+    assert child_save.await_count >= 1

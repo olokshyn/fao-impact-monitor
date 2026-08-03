@@ -21,6 +21,12 @@ from .pdf_extract_stage import (
     PdfExtractStageResult,
     PdfExtractStageVersion,
 )
+from .tellus_document_fetch_stage import (
+    TELLUS_DOCUMENT_FETCH_STAGE_NAME,
+    TellusDocumentFetchStage,
+    TellusDocumentFetchStageResult,
+    TellusDocumentFetchStageVersion,
+)
 
 __all__ = [
     "CHUNK_ITERATOR_PARAM",
@@ -29,6 +35,7 @@ __all__ = [
     "PDF_EXTRACT_STAGE_NAME",
     "PIPELINE_FOR_PDF_PARAM",
     "PIPELINE_FOR_WEB_PARAM",
+    "TELLUS_DOCUMENT_FETCH_STAGE_NAME",
     "CountryDetectStage",
     "CountryDetectStageResult",
     "CountryDetectStageVersion",
@@ -40,4 +47,7 @@ __all__ = [
     "PdfExtractStage",
     "PdfExtractStageResult",
     "PdfExtractStageVersion",
+    "TellusDocumentFetchStage",
+    "TellusDocumentFetchStageResult",
+    "TellusDocumentFetchStageVersion",
 ]

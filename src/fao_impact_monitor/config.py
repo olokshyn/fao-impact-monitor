@@ -62,6 +62,19 @@ class CountryDetectConfig(BaseSettings):
     max_agent_retries: int = 3
 
 
+class TellusConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="TELLUS_",
+        **_COMMON_SETTINGS,
+    )
+
+    bearer_token: SecretStr = SecretStr("")
+    api_base: str = "https://tellus.dev.fao.org"
+    save_dir: Path = DATA_DIR / "tellus"
+    min_year: int = 1997
+    max_results: int = 50
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
@@ -69,6 +82,7 @@ class Config(BaseSettings):
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
+    tellus: TellusConfig = Field(default_factory=TellusConfig)
 
 
 def get_config() -> Config:

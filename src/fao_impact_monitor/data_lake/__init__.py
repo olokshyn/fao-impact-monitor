@@ -1,12 +1,18 @@
 from .common import Status
 from .document import Document, DocumentType, Relation, RelationSide, RelationType
-from .documents import PdfDocument, WebPageDocument
+from .documents import (
+    TELLUS_DOCUMENT_TYPE,
+    PdfDocument,
+    TellusDocument,
+    WebPageDocument,
+)
 from .stage import Stage, StageResult, StageVersion
 from .stages import (
     CHUNK_ITERATOR_PARAM,
     COUNTRY_DETECT_STAGE_NAME,
     PDF_CRAWL_STAGE_NAME,
     PDF_EXTRACT_STAGE_NAME,
+    TELLUS_DOCUMENT_FETCH_STAGE_NAME,
     CountryDetection,
     CountryDetectStage,
     CountryDetectStageResult,
@@ -17,6 +23,9 @@ from .stages import (
     PdfExtractStage,
     PdfExtractStageResult,
     PdfExtractStageVersion,
+    TellusDocumentFetchStage,
+    TellusDocumentFetchStageResult,
+    TellusDocumentFetchStageVersion,
 )
 
 __all__ = [
@@ -24,6 +33,8 @@ __all__ = [
     "COUNTRY_DETECT_STAGE_NAME",
     "PDF_CRAWL_STAGE_NAME",
     "PDF_EXTRACT_STAGE_NAME",
+    "TELLUS_DOCUMENT_FETCH_STAGE_NAME",
+    "TELLUS_DOCUMENT_TYPE",
     "CountryDetectStage",
     "CountryDetectStageResult",
     "CountryDetectStageVersion",
@@ -44,5 +55,9 @@ __all__ = [
     "StageResult",
     "StageVersion",
     "Status",
+    "TellusDocument",
+    "TellusDocumentFetchStage",
+    "TellusDocumentFetchStageResult",
+    "TellusDocumentFetchStageVersion",
     "WebPageDocument",
 ]

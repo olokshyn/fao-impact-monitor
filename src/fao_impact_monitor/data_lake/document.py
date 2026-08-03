@@ -13,6 +13,7 @@ from fao_impact_monitor.utils.meta_magic import get_class_id_value
 class DocumentType(StrEnum):
     WEB_PAGE = auto()
     PDF = auto()
+    TELLUS = auto()
 
 
 class RelationType(StrEnum):
@@ -42,6 +43,7 @@ class Document(BeanieDocument):
         ),
     ] = None
     title: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     relations: list[Relation] = Field(default_factory=list)
     pipeline_statuses: dict[str, Status] = Field(default_factory=dict)
     stage_results: dict[str, list[StageResult]] = Field(default_factory=dict)

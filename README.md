@@ -64,6 +64,12 @@ uv run check
 
 This applies `ruff format`, runs `ruff check`, then `mypy`, then `pytest` (stops on the first failure).
 
+Skip integration tests:
+
+```bash
+uv run check --unit-only
+```
+
 ### Format and lint (`ruff`)
 
 Apply formatting:
@@ -112,29 +118,44 @@ Integration tests (live external APIs) are marked with `@pytest.mark.integration
 uv run pytest -m "not integration"
 ```
 
+## Data providers vs data sources
+
+Two layers sit under `src/fao_impact_monitor/`:
+
+| Layer | Path | Role |
+| --- | --- | --- |
+| **Data providers** | `data_provider/` | Thin wrappers over external APIs. They call services such as Tellus and return raw payloads (search hits, document chunks, etc.). No metric-level interpretation. |
+| **Data sources** | `data_source/` | Higher-level abstractions that answer the questions needed to compute a `Metric` (`metric/metric.py`). A `DataSource` may use AI to understand data from providers (Tellus) and other evidence pipelines (for example the PDF data lake) and return `DataResult` evidence for a metric. |
+
+Example: `tellus_provider` searches and fetches Tellus chunks; `TellusDataSource` builds a metric/country query, starts the Tellus process pipeline on matching documents, and returns results suitable for metric computation.
+
 ## Adding a data source
 
-New providers implement the `DataSource` interface in
+New metric-facing sources implement the `DataSource` interface in
 `src/fao_impact_monitor/data_source/data_source.py`. There is one `DataSource`
-instance per provider type (for example one `WorldBank`, one FAOSTAT). Provider
+instance per source type (for example one `WorldBank`, one `Tellus`). Source
 parameters such as a World Bank indicator live on a `DataSourceConfig` subclass
 read from the metrics definition, not on the `DataSource` itself.
 
 Concrete subclasses are registered automatically by the `source` class attribute
-and constructed with `build_data_source(source)`.
+and constructed with `get_data_source(source)`.
+
+Low-level HTTP/API clients belong in `data_provider/` (see
+`data_provider/tellus_provider.py`), not inside a `DataSource` module, when the
+same API is reused by stages or multiple sources.
 
 ### Implement the interface
 
 1. Add a module under `src/fao_impact_monitor/data_source/` (see
    `world_bank.py` as the reference implementation).
 2. Subclass `DataSource` and set a unique `source: str = "..."` class attribute.
-3. Subclass `DataSourceConfig` for any provider-specific fields (for example
+3. Subclass `DataSourceConfig` for any source-specific fields (for example
    `indicator` on `WorldBankDataSourceConfig`).
 4. Implement
    `async def get_data(self, metric, data_source_config, country_iso3, *, year_start=None, year_end=None) -> list[DataResult]`.
    Validate `data_source_config` into your config subclass inside `get_data`.
 5. Return `DataResult` (or a subclass) with `source`, `citation`, `metadata`,
-   and optional `document` / `url`. Attach provider-specific payload fields on a
+   and optional `document` / `url`. Attach source-specific payload fields on a
    subclass when needed (for example `WorldBankDataResult.data`).
 6. Export the classes from `src/fao_impact_monitor/data_source/__init__.py` so
    the source is imported and registered.
@@ -147,7 +168,7 @@ from fao_impact_monitor.metric import Metric
 
 
 class MySourceConfig(DataSourceConfig):
-    # provider-specific fields...
+    # source-specific fields...
     ...
 
 
@@ -172,7 +193,7 @@ class MySource(DataSource):
 Every new data source must have unit tests under `./tests`. Follow
 `tests/test_world_bank.py`:
 
-- Cover registration via `build_data_source` (no provider kwargs on the source).
+- Cover registration via `get_data_source` (no provider kwargs on the source).
 - Cover `get_data` behaviour with a `Metric`, a source config, and mocked HTTP /
   SDK calls (no network).
 - Include **at least one** `@pytest.mark.integration` test that calls the live

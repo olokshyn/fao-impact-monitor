@@ -13,6 +13,7 @@ from fao_impact_monitor.data_lake.common import Status
 
 from .document import Document, DocumentType, RelationSide
 from .documents.pdf_document import PdfDocument
+from .documents.tellus_document import TellusDocument
 from .documents.web_page_document import WebPageDocument
 from .stage import StageResult, get_stage
 from .stages.country_detect_stage import (
@@ -25,9 +26,14 @@ from .stages.pdf_crawl_stage import (
     PIPELINE_FOR_WEB_PARAM,
 )
 from .stages.pdf_extract_stage import PDF_EXTRACT_STAGE_NAME, PdfExtractStageResult
+from .stages.tellus_document_fetch_stage import (
+    TELLUS_DOCUMENT_FETCH_STAGE_NAME,
+    TellusDocumentFetchStageResult,
+)
 
 PIPELINE_PDF_CRAWL = "pdf_crawl"
 PIPELINE_PDF_PROCESS = "pdf_process"
+PIPELINE_TELLUS_PROCESS = "tellus_process"
 
 _PIPELINE_REGISTRY: dict[str, type[Pipeline]] = {}
 
@@ -168,10 +174,13 @@ def _stage_result_already_recorded(
 
 
 async def _find_document_by_url(url: str) -> Document | None:
-    page = await WebPageDocument.find_one(WebPageDocument.url == url)
-    if page is not None:
-        return page
-    return await PdfDocument.find_one(PdfDocument.url == url)
+    return await Document.find_one(Document.url == url)
+
+
+async def find_tellus_document_by_external_id(
+    external_id: str,
+) -> TellusDocument | None:
+    return await TellusDocument.find_one(TellusDocument.external_id == external_id)
 
 
 async def _find_document_by_id(
@@ -182,6 +191,8 @@ async def _find_document_by_id(
         return await WebPageDocument.get(document_id)
     if document_type == DocumentType.PDF:
         return await PdfDocument.get(document_id)
+    if document_type == DocumentType.TELLUS:
+        return await TellusDocument.get(document_id)
     return None
 
 
@@ -200,6 +211,21 @@ def extracted_pdf_chunk_iterator(prev_stages: list[StageResult]) -> Iterator[str
         yield path.read_text(encoding="utf-8")
 
 
+def extracted_tellus_chunk_iterator(prev_stages: list[StageResult]) -> Iterator[str]:
+    """Yield markdown text for each chunk from a completed tellus fetch result."""
+    fetch = _resolve_tellus_fetch(prev_stages)
+    if fetch is None:
+        raise ValueError(
+            f"country_detect requires a completed {TELLUS_DOCUMENT_FETCH_STAGE_NAME} "
+            "result in previous stages"
+        )
+    for page_path in fetch.page_paths:
+        path = Path(page_path)
+        if not path.is_file():
+            raise ValueError(f"tellus_document_fetch page file not found: {page_path}")
+        yield path.read_text(encoding="utf-8")
+
+
 def _resolve_pdf_extract(
     prev_stages: list[StageResult],
 ) -> PdfExtractStageResult | None:
@@ -213,6 +239,22 @@ def _resolve_pdf_extract(
         if extract.status != Status.COMPLETED:
             return None
         return extract
+    return None
+
+
+def _resolve_tellus_fetch(
+    prev_stages: list[StageResult],
+) -> TellusDocumentFetchStageResult | None:
+    for result in reversed(prev_stages):
+        if result.name != TELLUS_DOCUMENT_FETCH_STAGE_NAME:
+            continue
+        if isinstance(result, TellusDocumentFetchStageResult):
+            fetch = result
+        else:
+            fetch = TellusDocumentFetchStageResult.model_validate(result.model_dump())
+        if fetch.status != Status.COMPLETED:
+            return None
+        return fetch
     return None
 
 
@@ -244,5 +286,19 @@ class PdfProcessPipeline(Pipeline):
     )
 
 
+class TellusProcessPipeline(Pipeline):
+    name: Annotated[str, Indexed(unique=True)] = PIPELINE_TELLUS_PROCESS
+    steps: list[PipelineStep] = Field(
+        default_factory=lambda: [
+            PipelineStep(stage_name=TELLUS_DOCUMENT_FETCH_STAGE_NAME, params={}),
+            PipelineStep(
+                stage_name=COUNTRY_DETECT_STAGE_NAME,
+                params={CHUNK_ITERATOR_PARAM: extracted_tellus_chunk_iterator},
+            ),
+        ]
+    )
+
+
 register_pipeline(PIPELINE_PDF_CRAWL, PdfCrawlPipeline)
 register_pipeline(PIPELINE_PDF_PROCESS, PdfProcessPipeline)
+register_pipeline(PIPELINE_TELLUS_PROCESS, TellusProcessPipeline)
