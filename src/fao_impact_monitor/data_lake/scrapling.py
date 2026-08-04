@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,8 +15,37 @@ logger = logging.getLogger(__name__)
 PDF_MAGIC_BYTES = b"%PDF"
 HTML_MAGIC_BYTES = b"<!doctype"
 
+BodyCaptureMode = Literal["raw", "rendered"]
+
 # browserforge header data often lags Playwright's bundled Chrome version.
 _MAX_BROWSERFORGE_CHROME_VERSION = 143
+
+_SCRIPT_OR_STYLE_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+_LINK_HREF_RE = re.compile(r"""<a\b[^>]*\bhref\s*=""", re.IGNORECASE)
+_SCRIPT_TAG_RE = re.compile(r"<script\b", re.IGNORECASE)
+_EMPTY_MOUNT_RE = re.compile(
+    r"""<div[^>]*\bid=["'](root|app|__next|___gatsby|_r_)["'][^>]*>\s*</div>""",
+    re.IGNORECASE,
+)
+_EMPTY_CUSTOM_ELEMENT_RE = re.compile(
+    r"<([a-z][a-z0-9]*-[a-z0-9-]*)\b[^>]*>\s*</\1>",
+    re.IGNORECASE,
+)
+_SPA_SUBSTRING_MARKERS = (
+    "data-reactroot",
+    "ng-version=",
+    "<app-root",
+    "__next_f",
+    "data-v-app",
+    "__sveltekit",
+    "q:container",
+    "astro-island",
+)
 
 _FETCH_FINAL_URL_JS = """
 async (url) => {
@@ -37,6 +67,42 @@ def _as_bytes(body: bytes | str | bytearray) -> bytes:
     if isinstance(body, str):
         return body.encode()
     return bytes(body)
+
+
+def _looks_like_html(body: bytes) -> bool:
+    head = body.lstrip()[:512].lower()
+    return head.startswith((HTML_MAGIC_BYTES, b"<html")) or b"<html" in head
+
+
+def looks_like_spa_shell(body: bytes) -> bool:
+    """Return True when ``body`` looks like a client-rendered SPA shell.
+
+    Detects near-empty HTML with framework mount points / custom elements and
+    script bundles, where useful crawl links only appear after JS execution.
+    """
+    if not body or body.startswith(PDF_MAGIC_BYTES) or not _looks_like_html(body):
+        return False
+
+    html = body.decode("utf-8", errors="replace")
+    lower = html.lower()
+    without_assets = _SCRIPT_OR_STYLE_RE.sub(" ", lower)
+    visible = _WHITESPACE_RE.sub(" ", _TAG_RE.sub(" ", without_assets)).strip()
+    visible_len = len(visible)
+    link_count = len(_LINK_HREF_RE.findall(lower))
+    script_count = len(_SCRIPT_TAG_RE.findall(lower))
+    has_marker = bool(_EMPTY_MOUNT_RE.search(lower)) or bool(
+        _EMPTY_CUSTOM_ELEMENT_RE.search(lower)
+    )
+    if not has_marker:
+        has_marker = any(marker in lower for marker in _SPA_SUBSTRING_MARKERS)
+
+    # Substantial server-rendered content: keep the HTTP body.
+    if visible_len >= 500 and link_count >= 3:
+        return False
+    if has_marker and visible_len < 300:
+        return True
+    # Script-heavy page with no crawlable links and almost no text.
+    return script_count >= 3 and link_count == 0 and visible_len < 300
 
 
 def chromium_installed() -> bool:
@@ -170,6 +236,26 @@ async def _capture_final_body(page: Any) -> bytes:
     return base64.b64decode(payload)
 
 
+async def _capture_rendered_html(page: Any) -> bytes:
+    """Return the browser-rendered DOM HTML after client-side content settles."""
+    await _wait_for_settled_url(page)
+    wait_for_selector = getattr(page, "wait_for_selector", None)
+    wait_for_timeout = getattr(page, "wait_for_timeout", None)
+    if wait_for_selector is not None:
+        try:
+            # Prefer waiting for crawlable links; fall back to a short settle.
+            await wait_for_selector("a[href]", timeout=15_000)
+        except _BROWSER_ERRORS:
+            if wait_for_timeout is not None:
+                await wait_for_timeout(2_000)
+    elif wait_for_timeout is not None:
+        await wait_for_timeout(3_000)
+    html = await page.content()
+    if isinstance(html, bytes):
+        return html
+    return str(html).encode("utf-8")
+
+
 async def browser_fetch(
     *,
     url: str,
@@ -179,18 +265,24 @@ async def browser_fetch(
     solve_cloudflare: bool = True,
     timeout: int = 30_000,
     retries: int = 3,
+    body_mode: BodyCaptureMode = "raw",
 ) -> bytes:
     """Fetch ``url`` with Scrapling ``StealthyFetcher`` and return the response body.
 
-    Uses an in-page ``fetch`` of the final URL so SPA redirects (and Chrome's PDF
-    viewer) still yield the raw response bytes rather than viewer HTML.
+    ``body_mode="raw"`` uses an in-page ``fetch`` of the final URL so SPA redirects
+    (and Chrome's PDF viewer) still yield the raw response bytes rather than
+    viewer HTML.
+
+    ``body_mode="rendered"`` returns ``page.content()`` after the DOM settles —
+    needed for SPA shells where useful markup only appears after JS runs.
     """
     logger.info(
-        "Browser fetch %s (timeout=%sms, retries=%s, solve_cloudflare=%s)",
+        "Browser fetch %s (timeout=%sms, retries=%s, solve_cloudflare=%s, body_mode=%s)",
         url,
         timeout,
         retries,
         solve_cloudflare,
+        body_mode,
     )
     # sync_playwright cannot run inside an active asyncio loop
     await asyncio.to_thread(ensure_chromium)
@@ -198,7 +290,10 @@ async def browser_fetch(
     captured: dict[str, bytes] = {}
 
     async def page_action(page: Any) -> Any:
-        captured["body"] = await _capture_final_body(page)
+        if body_mode == "rendered":
+            captured["body"] = await _capture_rendered_html(page)
+        else:
+            captured["body"] = await _capture_final_body(page)
         return page
 
     async def _fetch(*, with_cloudflare: bool) -> bytes:
@@ -254,17 +349,22 @@ async def reliable_fetch(
     solve_cloudflare: bool = True,
     browser_retries: int = 3,
 ) -> bytes:
-    """Fetch ``url`` with ``fetch``, falling back to ``browser_fetch`` on HTTP errors.
+    """Fetch ``url`` with ``fetch``, falling back to ``browser_fetch`` when needed.
 
-    Falls back only on ``CurlError`` (transport / HTTP client failures from
-    Scrapling's ``AsyncFetcher``). Other exceptions are re-raised.
+    Falls back to the browser when:
+
+    - HTTP fetch raises ``CurlError`` (transport / client failures), or
+    - the HTTP body looks like an empty SPA shell (no crawlable content without JS).
+
+    SPA shells are re-fetched with ``body_mode="rendered"`` so the hydrated DOM is
+    returned. Transport failures keep ``body_mode="raw"`` (needed for PDF bytes).
 
     ``timeout`` is in seconds (same as ``fetch``) and is converted to milliseconds
     for ``browser_fetch``.
     """
     logger.info("Reliable fetch %s (HTTP then browser fallback)", url)
     try:
-        return await fetch(
+        body = await fetch(
             url=url,
             stealthy_headers=stealthy_headers,
             follow_redirects=follow_redirects,
@@ -286,4 +386,23 @@ async def reliable_fetch(
             solve_cloudflare=solve_cloudflare,
             timeout=timeout * 1000,
             retries=browser_retries,
+            body_mode="raw",
         )
+
+    if looks_like_spa_shell(body):
+        logger.info(
+            "SPA shell detected for %s (%s bytes); re-fetching rendered HTML",
+            url,
+            len(body),
+        )
+        return await browser_fetch(
+            url=url,
+            headless=headless,
+            disable_resources=disable_resources,
+            network_idle=network_idle,
+            solve_cloudflare=solve_cloudflare,
+            timeout=timeout * 1000,
+            retries=browser_retries,
+            body_mode="rendered",
+        )
+    return body

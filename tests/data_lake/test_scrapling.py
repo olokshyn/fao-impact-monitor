@@ -11,8 +11,21 @@ from fao_impact_monitor.data_lake.scrapling import (
     browser_fetch,
     ensure_chromium,
     fetch,
+    looks_like_spa_shell,
     reliable_fetch,
 )
+
+FAO_SPA_SHELL = b"""<!DOCTYPE html>
+<html>
+<head><title>FAO Knowledge Repository</title></head>
+<body>
+  <ds-app></ds-app>
+  <script src="runtime.js" type="module"></script>
+  <script src="polyfills.js" type="module"></script>
+  <script src="main.js" type="module"></script>
+</body>
+</html>
+"""
 
 FAO_PDF_URL = (
     "https://openknowledge.fao.org/bitstreams/"
@@ -104,6 +117,64 @@ def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) ->
     )
 
 
+def test_looks_like_spa_shell_detects_fao_app_shell() -> None:
+    assert looks_like_spa_shell(FAO_SPA_SHELL)
+    assert not looks_like_spa_shell(b"%PDF-1.4")
+    assert not looks_like_spa_shell(b"not html")
+    content_html = (
+        b"<!DOCTYPE html><html><body>"
+        b"<h1>Report</h1><p>El Nino impacts agriculture in Kenya.</p>"
+        b'<a href="/doc1.pdf">PDF</a><a href="/doc2">More</a>'
+        b'<a href="/doc3">Extra</a></body></html>'
+    )
+    assert not looks_like_spa_shell(content_html)
+
+
+def test_browser_fetch_rendered_returns_page_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run_page_action(_url: str, **kwargs: object) -> SimpleNamespace:
+        page_action = kwargs["page_action"]
+        assert callable(page_action)
+        page = SimpleNamespace(url="https://example.com/spa")
+
+        async def wait_for_timeout(_ms: int) -> None:
+            return
+
+        async def wait_for_selector(_sel: str, timeout: int = 0) -> None:
+            del timeout
+
+        async def content() -> str:
+            return "<html><body><a href='/x'>link</a></body></html>"
+
+        page.wait_for_timeout = wait_for_timeout
+        page.wait_for_selector = wait_for_selector
+        page.content = content
+        await page_action(page)
+        return SimpleNamespace(body=b"unused")
+
+    async_fetch = AsyncMock(side_effect=run_page_action)
+    stealthy_fetcher = SimpleNamespace(async_fetch=async_fetch)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.ensure_chromium",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling._stealthy_fetcher",
+        lambda: stealthy_fetcher,
+    )
+
+    body = asyncio.run(
+        browser_fetch(
+            url="https://example.com/spa",
+            body_mode="rendered",
+            solve_cloudflare=False,
+            retries=1,
+        )
+    )
+    assert b'href="/x"' in body or b"href='/x'" in body
+
+
 def test_reliable_fetch_uses_fetch_when_successful(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,6 +251,43 @@ def test_reliable_fetch_uses_browser_on_http_error(
         solve_cloudflare=False,
         timeout=15_000,
         retries=2,
+        body_mode="raw",
+    )
+
+
+def test_reliable_fetch_uses_browser_for_spa_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_mock = AsyncMock(return_value=FAO_SPA_SHELL)
+    browser_mock = AsyncMock(
+        return_value=b"<html><body><a href='/pub.pdf'>PDF</a></body></html>"
+    )
+    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        browser_mock,
+    )
+
+    body = asyncio.run(
+        reliable_fetch(
+            url="https://openknowledge.fao.org/search",
+            timeout=15,
+            fetch_retries=1,
+            solve_cloudflare=False,
+            browser_retries=2,
+        )
+    )
+
+    assert b"/pub.pdf" in body
+    browser_mock.assert_awaited_once_with(
+        url="https://openknowledge.fao.org/search",
+        headless=True,
+        disable_resources=False,
+        network_idle=True,
+        solve_cloudflare=False,
+        timeout=15_000,
+        retries=2,
+        body_mode="rendered",
     )
 
 
