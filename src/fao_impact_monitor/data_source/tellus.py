@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from fao_impact_monitor.agent.query_generator_agent import generate_queries
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.documents.tellus_document import TellusDocument
 from fao_impact_monitor.data_lake.pipeline import (
@@ -36,6 +37,17 @@ def _group_matched_pages(
     return grouped
 
 
+def _merge_matched_pages(
+    into: dict[str, list[int]],
+    incoming: dict[str, list[int]],
+) -> None:
+    for document_id, pages in incoming.items():
+        existing = into.setdefault(document_id, [])
+        for page in pages:
+            if page not in existing:
+                existing.append(page)
+
+
 class TellusDataSource(DataSource):
     source: str = "Tellus"
 
@@ -50,23 +62,42 @@ class TellusDataSource(DataSource):
     ) -> list[DataResult]:
         del data_source_config, year_start, year_end
         country = iso3_to_country_name(country_iso3)
-        query = f"{country}: {metric.description}"
+        queries = await generate_queries(
+            research_question=metric.name,
+            explanation=(
+                f"{metric.description} "
+                f"In your answer provide quantitative results in {metric.unit}."
+            ),
+            example=metric.example,
+        )
         logger.info(
-            "TellusDataSource: country=%s (%s) metric=%r query=%r",
+            "TellusDataSource: country=%s (%s) metric=%r queries=%s",
             country_iso3,
             country,
             metric.name,
-            query,
+            queries,
         )
-        response = await tellus_search_chunks(query)
-        chunks = response.get("chunks") or []
-        if not isinstance(chunks, list):
-            raise TypeError(f"Tellus search chunks must be a list, got {type(chunks)}")
-        chunk_dicts = [c for c in chunks if isinstance(c, dict)]
-        matched_by_doc = _group_matched_pages(chunk_dicts)
+
+        matched_by_doc: dict[str, list[int]] = {}
+        total_chunks = 0
+        for query in queries:
+            response = await tellus_search_chunks(
+                query,
+                countries_iso3=[country_iso3],
+            )
+            chunks = response.get("chunks") or []
+            if not isinstance(chunks, list):
+                raise TypeError(
+                    f"Tellus search chunks must be a list, got {type(chunks)}"
+                )
+            chunk_dicts = [c for c in chunks if isinstance(c, dict)]
+            total_chunks += len(chunk_dicts)
+            _merge_matched_pages(matched_by_doc, _group_matched_pages(chunk_dicts))
+
         logger.info(
-            "TellusDataSource: %s search chunk(s) → %s unique document(s) to process",
-            len(chunk_dicts),
+            "TellusDataSource: %s search(es), %s chunk(s) → %s unique document(s)",
+            len(queries),
+            total_chunks,
             len(matched_by_doc),
         )
 

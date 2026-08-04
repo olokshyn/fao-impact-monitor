@@ -66,6 +66,18 @@ class CountryDetectConfig(BaseSettings):
     max_agent_retries: int = 3
 
 
+class QueryGeneratorConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="QUERY_GENERATOR_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-luna"
+    max_agent_retries: int = 3
+    min_queries: int = 3
+    max_queries: int = 5
+
+
 class TellusConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TELLUS_",
@@ -131,6 +143,7 @@ class Config(BaseSettings):
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
+    query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)

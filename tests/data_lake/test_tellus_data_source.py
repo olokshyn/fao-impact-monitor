@@ -21,6 +21,12 @@ from fao_impact_monitor.utils.country import iso3_to_country_name
 T = TypeVar("T")
 RunAsync = Callable[[Coroutine[Any, Any, T]], T]
 
+_GENERATED_QUERIES = [
+    "water stress indicators measurement methods",
+    "water resources availability quantitative trends",
+    "drivers of water scarcity agriculture",
+]
+
 
 def _metric() -> Metric:
     return Metric(
@@ -62,18 +68,39 @@ def test_get_data_searches_and_unions_matched_pages(
     )
     run_async(existing.insert())
 
-    async def fake_search(query: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    searched: list[tuple[str, list[str] | None]] = []
+
+    async def fake_generate_queries(**kwargs: Any) -> list[str]:
+        assert kwargs["research_question"] == "Water stress"
+        assert "Water resources availability" in kwargs["explanation"]
+        assert "quantitative results in %" in kwargs["explanation"]
+        assert kwargs["example"] == "Water stress increased."
+        return list(_GENERATED_QUERIES)
+
+    async def fake_search(
+        query: str,
+        countries_iso3: list[str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         del args, kwargs
-        country = iso3_to_country_name("KEN")
-        assert query == f"{country}: Water resources availability"
-        return {
-            "chunks": [
-                {"document_id": "doc-1", "page_num": 2},
-                {"document_id": "doc-1", "page_num": 5},
-                {"document_id": "doc-2", "page_num": 1},
-            ],
-            "documents": [],
-        }
+        searched.append((query, countries_iso3))
+        if query == _GENERATED_QUERIES[0]:
+            return {
+                "chunks": [
+                    {"document_id": "doc-1", "page_num": 2},
+                    {"document_id": "doc-1", "page_num": 5},
+                ],
+                "documents": [],
+            }
+        if query == _GENERATED_QUERIES[1]:
+            return {
+                "chunks": [
+                    {"document_id": "doc-2", "page_num": 1},
+                ],
+                "documents": [],
+            }
+        return {"chunks": [], "documents": []}
 
     run_calls: list[str] = []
 
@@ -95,6 +122,10 @@ def test_get_data_searches_and_unions_matched_pages(
     pipeline.run = AsyncMock(side_effect=fake_run)
 
     monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.generate_queries",
+        fake_generate_queries,
+    )
+    monkeypatch.setattr(
         "fao_impact_monitor.data_source.tellus.tellus_search_chunks",
         fake_search,
     )
@@ -112,6 +143,9 @@ def test_get_data_searches_and_unions_matched_pages(
         )
     )
 
+    assert [q for q, _ in searched] == _GENERATED_QUERIES
+    assert all(countries == ["KEN"] for _, countries in searched)
+
     refreshed = run_async(_find_by_external_id("doc-1"))
     assert refreshed is not None
     assert refreshed.matched_pages == [1, 2, 5]
@@ -124,16 +158,29 @@ def test_get_data_searches_and_unions_matched_pages(
     assert {r.title for r in results} == {"Existing", "Title doc-2"}
 
 
-def test_get_data_query_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_data_runs_generated_queries(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
-    captured: dict[str, str] = {}
+    searched: list[tuple[str, list[str] | None]] = []
 
-    async def fake_search(query: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    async def fake_generate_queries(**kwargs: Any) -> list[str]:
+        del kwargs
+        return list(_GENERATED_QUERIES)
+
+    async def fake_search(
+        query: str,
+        countries_iso3: list[str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         del args, kwargs
-        captured["query"] = query
+        searched.append((query, countries_iso3))
         return {"chunks": [], "documents": []}
 
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.generate_queries",
+        fake_generate_queries,
+    )
     monkeypatch.setattr(
         "fao_impact_monitor.data_source.tellus.tellus_search_chunks",
         fake_search,
@@ -152,7 +199,8 @@ def test_get_data_query_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         )
     )
     assert results == []
-    assert captured["query"] == "Republic of Kenya: Water resources availability"
+    assert [q for q, _ in searched] == _GENERATED_QUERIES
+    assert all(countries == ["KEN"] for _, countries in searched)
 
 
 async def _find_by_external_id(external_id: str) -> TellusDocument | None:
