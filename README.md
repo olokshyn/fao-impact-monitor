@@ -51,9 +51,18 @@ For interactive debugging of Atlas Search / Vector Search (`$search`, `$vectorSe
 docker compose up -d
 ```
 
-Uses the `mongodb/mongodb-atlas-local` image (mongod + mongot). Data and search indexes persist in Docker volumes. Set `MONGODB_INITDB_ROOT_USERNAME` and `MONGODB_INITDB_ROOT_PASSWORD` in `.env` (Compose reads them automatically). Connection:
+Uses the `mongodb/mongodb-atlas-local` image (mongod + mongot). Data and search indexes persist in Docker volumes. Connection settings live in `MongoConfig` (`src/fao_impact_monitor/config.py`) / helpers in `data_lake/mongo.py`. Set in `.env`:
 
-`mongodb://$MONGODB_INITDB_ROOT_USERNAME:$MONGODB_INITDB_ROOT_PASSWORD@localhost:27017/?directConnection=true`
+- `MONGO_USERNAME` / `MONGO_PASSWORD` (also mapped by Compose to the image init vars)
+- optional `MONGO_HOST` (default `127.0.0.1`), `MONGO_PORT` (default `27018`), `MONGO_DB_NAME` (default `fao_impact_monitor`)
+
+(Host port **27018** avoids conflicts with tools that bind `localhost:27017`, e.g. Cursor port forwarding.)
+
+Clear the debug database and/or `fetched_data`:
+
+```bash
+uv run clear-datalake --yes
+```
 
 Unit tests do **not** use this container; they run against mongomock.
 
@@ -220,6 +229,15 @@ Documents are Beanie models stored in MongoDB. The base class lives in
 `src/fao_impact_monitor/data_lake/document.py`. Concrete document types are
 registered via Beanie inheritance (`Settings.class_id` / `class_id_value`).
 
+**Required:** every Beanie document model (including `Document` subclasses,
+`StageVersion` subclasses, `Pipeline` subclasses, `ChunkEmbedding`, and any
+future root collections) must be listed in
+`DATA_LAKE_DOCUMENT_MODELS` in
+`src/fao_impact_monitor/data_lake/mongo.py`. That list is what
+`init_data_lake_beanie` / `connect_data_lake` pass to `init_beanie`. Omitting a
+model means Beanie will not initialize it in apps, notebooks, or tests that use
+those helpers.
+
 ### Implement the document
 
 1. Add a module under `src/fao_impact_monitor/data_lake/documents/` (see
@@ -232,8 +250,11 @@ registered via Beanie inheritance (`Settings.class_id` / `class_id_value`).
    to avoid typos.
 4. Subclass `Document` and implement the `citation` computed field.
 5. Export the constant and class from
-   `src/fao_impact_monitor/data_lake/documents/__init__.py` so they are
-   imported and available to Beanie.
+   `src/fao_impact_monitor/data_lake/documents/__init__.py`.
+6. **Register the class in**
+   `DATA_LAKE_DOCUMENT_MODELS` in
+   `src/fao_impact_monitor/data_lake/mongo.py` (import it there and append it to
+   the list).
 
 Minimal shape:
 
@@ -312,7 +333,9 @@ A document tracks progress **per pipeline** via `Document.pipeline_statuses`
 4. Subclass `Stage` and set `name = MY_STAGE_NAME`. Implement `get_version`
    and `run`.
 5. Optionally subclass `StageVersion` with `Settings.class_id_value` when the
-   stage needs custom provenance parameters.
+   stage needs custom provenance parameters. If you add a `StageVersion`
+   subclass, also register it in `DATA_LAKE_DOCUMENT_MODELS` in
+   `src/fao_impact_monitor/data_lake/mongo.py`.
 6. Export the constant and classes from
    `src/fao_impact_monitor/data_lake/stages/__init__.py` so they are imported
    and registered.

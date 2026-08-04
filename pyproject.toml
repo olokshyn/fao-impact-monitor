@@ -29,6 +29,7 @@ dependencies = [
 [project.scripts]
 fao-impact-monitor = "fao_impact_monitor:main"
 check = "fao_impact_monitor.check:app"
+clear-datalake = "fao_impact_monitor.clear_datalake:app"
 install-browsers = "fao_impact_monitor.data_lake.scrapling:ensure_chromium_main"
 
 [build-system]
@@ -37,6 +38,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.3.0",
     "mongomock-motor>=0.0.36",
     "mypy>=2.3.0",
     "pandas-stubs>=3.0.5.260730",

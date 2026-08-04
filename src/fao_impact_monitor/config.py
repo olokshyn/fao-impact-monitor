@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -93,6 +94,33 @@ class VectorStoreConfig(BaseSettings):
     embed_batch_size: int = 32
 
 
+class MongoConfig(BaseSettings):
+    """MongoDB connection settings (local Atlas Compose defaults)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="MONGO_",
+        **_COMMON_SETTINGS,
+    )
+
+    host: str = "127.0.0.1"
+    port: int = 27018
+    db_name: str = "fao_impact_monitor"
+    username: SecretStr = SecretStr("")
+    password: SecretStr = SecretStr("")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def uri(self) -> str:
+        user = self.username.get_secret_value()
+        password = self.password.get_secret_value()
+        if not user or not password:
+            raise ValueError("Set MONGO_USERNAME and MONGO_PASSWORD in .env")
+        return (
+            f"mongodb://{quote_plus(user)}:{quote_plus(password)}"
+            f"@{self.host}:{self.port}/?directConnection=true&authSource=admin"
+        )
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
@@ -102,6 +130,7 @@ class Config(BaseSettings):
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    mongo: MongoConfig = Field(default_factory=MongoConfig)
 
 
 def get_config() -> Config:

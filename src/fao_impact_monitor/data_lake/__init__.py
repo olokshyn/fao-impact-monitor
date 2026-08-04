@@ -6,6 +6,14 @@ from .documents import (
     TellusDocument,
     WebPageDocument,
 )
+from .mongo import (
+    DATA_LAKE_DOCUMENT_MODELS,
+    connect_data_lake,
+    create_async_mongo_client,
+    create_mongo_client,
+    get_mongo_config,
+    init_data_lake_beanie,
+)
 from .stage import Stage, StageResult, StageVersion
 from .stages import (
     CHUNK_ITERATOR_PARAM,
@@ -42,6 +50,7 @@ from .vectorstore import (
 __all__ = [
     "CHUNK_ITERATOR_PARAM",
     "COUNTRY_DETECT_STAGE_NAME",
+    "DATA_LAKE_DOCUMENT_MODELS",
     "EMBED_CHUNKS_STAGE_NAME",
     "PDF_CRAWL_STAGE_NAME",
     "PDF_EXTRACT_STAGE_NAME",
@@ -79,5 +88,10 @@ __all__ = [
     "VectorStore",
     "WebPageDocument",
     "build_embeddings",
+    "connect_data_lake",
+    "create_async_mongo_client",
+    "create_mongo_client",
     "ensure_indexes",
+    "get_mongo_config",
+    "init_data_lake_beanie",
 ]
