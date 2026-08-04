@@ -192,6 +192,7 @@ class PdfCrawlStage(Stage):
             pdf_doc = PdfDocument(
                 url=document.url,
                 title=document.title,
+                source=document.source,
                 pipeline_statuses={pipeline_for_pdf: Status.PENDING},
                 relations=list(document.relations),
             )
@@ -357,6 +358,7 @@ class PdfCrawlStage(Stage):
                 else:
                     pdf_doc = PdfDocument(
                         url=url,
+                        source=seed_doc.source,
                         pipeline_statuses={pipeline_for_pdf: Status.PENDING},
                     )
                 content_path = await _persist_content(
@@ -387,6 +389,7 @@ class PdfCrawlStage(Stage):
             else:
                 page_doc = WebPageDocument(
                     url=url,
+                    source=seed_doc.source,
                     pipeline_statuses={pipeline_for_web: Status.PENDING},
                 )
             content_path = await _persist_content(
@@ -491,6 +494,7 @@ async def _ensure_web_page(
     page = WebPageDocument(
         url=seed.url,
         title=seed.title,
+        source=seed.source,
         pipeline_statuses={pipeline_for_web: Status.PENDING},
         relations=list(seed.relations),
     )

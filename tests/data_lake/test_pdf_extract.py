@@ -106,6 +106,7 @@ def test_extract_happy_path_writes_md_and_sets_title(
         .startswith("# Report Title")
     )
     assert doc.title == "Report Title"
+    assert doc.page_paths == result.page_paths
 
 
 def test_extract_rejects_non_pdf(

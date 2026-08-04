@@ -66,12 +66,15 @@ class TellusDataSource(DataSource):
                 existing.matched_pages = sorted(
                     set(existing.matched_pages) | set(new_pages)
                 )
+                if existing.source is None:
+                    existing.source = self.source
                 await existing.save()
                 doc = existing
             else:
                 doc = TellusDocument(
                     url=f"tellus://{document_id}",
                     external_id=document_id,
+                    source=self.source,
                     matched_pages=sorted(new_pages),
                     pipeline_statuses={PIPELINE_TELLUS_PROCESS: Status.PENDING},
                 )

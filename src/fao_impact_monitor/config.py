@@ -75,6 +75,24 @@ class TellusConfig(BaseSettings):
     max_results: int = 50
 
 
+class VectorStoreConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="VECTOR_STORE_",
+        **_COMMON_SETTINGS,
+    )
+
+    embedding_model: str = "text-embedding-3-large"
+    embedding_dimensions: int | None = None
+    collection_name: str = "embeddings"
+    vector_index_name: str = "embeddings_vector_index"
+    text_index_name: str = "embeddings_text_index"
+    vector_num_candidates: int = 100
+    limit: int = 10
+    vector_weight: float = 1.0
+    text_weight: float = 1.0
+    embed_batch_size: int = 32
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
@@ -83,6 +101,7 @@ class Config(BaseSettings):
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     tellus: TellusConfig = Field(default_factory=TellusConfig)
+    vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
 
 
 def get_config() -> Config:

@@ -25,6 +25,9 @@ from fao_impact_monitor.data_lake.stages.country_detect_stage import (
     CHUNK_ITERATOR_PARAM,
     COUNTRY_DETECT_STAGE_NAME,
 )
+from fao_impact_monitor.data_lake.stages.embed_chunks_stage import (
+    EMBED_CHUNKS_STAGE_NAME,
+)
 from fao_impact_monitor.data_lake.stages.tellus_document_fetch_stage import (
     TELLUS_DOCUMENT_FETCH_STAGE_NAME,
     TellusDocumentFetchStage,
@@ -51,8 +54,10 @@ def test_tellus_process_pipeline_steps() -> None:
     assert [step.stage_name for step in steps] == [
         TELLUS_DOCUMENT_FETCH_STAGE_NAME,
         COUNTRY_DETECT_STAGE_NAME,
+        EMBED_CHUNKS_STAGE_NAME,
     ]
     assert steps[1].params[CHUNK_ITERATOR_PARAM] is extracted_tellus_chunk_iterator
+    assert steps[2].params[CHUNK_ITERATOR_PARAM] is extracted_tellus_chunk_iterator
     assert TellusProcessPipeline.model_fields["name"].default == PIPELINE_TELLUS_PROCESS
 
 

@@ -20,6 +20,7 @@ from .stages.country_detect_stage import (
     CHUNK_ITERATOR_PARAM,
     COUNTRY_DETECT_STAGE_NAME,
 )
+from .stages.embed_chunks_stage import EMBED_CHUNKS_STAGE_NAME
 from .stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
@@ -282,6 +283,10 @@ class PdfProcessPipeline(Pipeline):
                 stage_name=COUNTRY_DETECT_STAGE_NAME,
                 params={CHUNK_ITERATOR_PARAM: extracted_pdf_chunk_iterator},
             ),
+            PipelineStep(
+                stage_name=EMBED_CHUNKS_STAGE_NAME,
+                params={CHUNK_ITERATOR_PARAM: extracted_pdf_chunk_iterator},
+            ),
         ]
     )
 
@@ -293,6 +298,10 @@ class TellusProcessPipeline(Pipeline):
             PipelineStep(stage_name=TELLUS_DOCUMENT_FETCH_STAGE_NAME, params={}),
             PipelineStep(
                 stage_name=COUNTRY_DETECT_STAGE_NAME,
+                params={CHUNK_ITERATOR_PARAM: extracted_tellus_chunk_iterator},
+            ),
+            PipelineStep(
+                stage_name=EMBED_CHUNKS_STAGE_NAME,
                 params={CHUNK_ITERATOR_PARAM: extracted_tellus_chunk_iterator},
             ),
         ]

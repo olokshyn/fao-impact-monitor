@@ -17,6 +17,7 @@ from pydantic import Field
 from fao_impact_monitor.config import PdfExtractConfig, get_config
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document, DocumentType
+from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
@@ -319,8 +320,11 @@ class PdfExtractStage(Stage):
                 error=str(exc),
             )
 
-        if result.status == Status.COMPLETED and result.title:
-            document.title = result.title
+        if result.status == Status.COMPLETED:
+            if result.title:
+                document.title = result.title
+            if isinstance(document, PdfDocument):
+                document.page_paths = list(result.page_paths)
         return result
 
     async def _submit(

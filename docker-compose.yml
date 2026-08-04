@@ -1,0 +1,25 @@
+# Local MongoDB Atlas (debug only — unit tests use mongomock).
+# Provides mongod + mongot for Atlas Search (BM25) and Vector Search.
+#
+# Credentials come from .env (MONGODB_INITDB_ROOT_USERNAME / PASSWORD).
+#   docker compose up -d
+#   Connection: mongodb://$MONGODB_INITDB_ROOT_USERNAME:$MONGODB_INITDB_ROOT_PASSWORD@localhost:27017/?directConnection=true
+
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:latest
+    hostname: mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGODB_INITDB_ROOT_USERNAME=${MONGODB_INITDB_ROOT_USERNAME}
+      - MONGODB_INITDB_ROOT_PASSWORD=${MONGODB_INITDB_ROOT_PASSWORD}
+    volumes:
+      - mongo_db:/data/db
+      - mongo_configdb:/data/configdb
+      - mongo_mongot:/data/mongot
+
+volumes:
+  mongo_db:
+  mongo_configdb:
+  mongo_mongot:

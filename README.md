@@ -43,6 +43,20 @@ uv run fao-impact-monitor
 Always use `uv run` for Python commands and scripts so they execute in the project environment.
 Do not use system `python` or `pip`.
 
+### Local MongoDB (debug)
+
+For interactive debugging of Atlas Search / Vector Search (`$search`, `$vectorSearch`, `$rankFusion`), start a persistent local Atlas-compatible MongoDB:
+
+```bash
+docker compose up -d
+```
+
+Uses the `mongodb/mongodb-atlas-local` image (mongod + mongot). Data and search indexes persist in Docker volumes. Set `MONGODB_INITDB_ROOT_USERNAME` and `MONGODB_INITDB_ROOT_PASSWORD` in `.env` (Compose reads them automatically). Connection:
+
+`mongodb://$MONGODB_INITDB_ROOT_USERNAME:$MONGODB_INITDB_ROOT_PASSWORD@localhost:27017/?directConnection=true`
+
+Unit tests do **not** use this container; they run against mongomock.
+
 ## Dependencies
 
 ```bash

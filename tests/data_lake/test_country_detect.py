@@ -29,6 +29,9 @@ from fao_impact_monitor.data_lake.stages.country_detect_stage import (
     CountryDetectStage,
     CountryDetectStageResult,
 )
+from fao_impact_monitor.data_lake.stages.embed_chunks_stage import (
+    EMBED_CHUNKS_STAGE_NAME,
+)
 from fao_impact_monitor.data_lake.stages.pdf_extract_stage import (
     PDF_EXTRACT_STAGE_NAME,
     PdfExtractStageResult,
@@ -64,6 +67,7 @@ def test_pdf_process_pipeline_includes_country_detect_after_extract() -> None:
     assert [step.stage_name for step in steps] == [
         PDF_EXTRACT_STAGE_NAME,
         COUNTRY_DETECT_STAGE_NAME,
+        EMBED_CHUNKS_STAGE_NAME,
     ]
     assert steps[1].params[CHUNK_ITERATOR_PARAM] is extracted_pdf_chunk_iterator
 

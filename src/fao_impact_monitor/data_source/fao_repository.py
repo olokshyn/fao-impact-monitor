@@ -60,6 +60,7 @@ class FaoRepository(DataSource):
         for seed_url in seed_urls:
             seed = WebPageDocument(
                 url=seed_url,
+                source=self.source,
                 pipeline_statuses={PIPELINE_PDF_CRAWL: Status.PENDING},
             )
             await pipeline.run(seed)

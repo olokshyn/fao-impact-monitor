@@ -42,6 +42,7 @@ class Document(BeanieDocument):
             partialFilterExpression={"external_id": {"$type": "string"}},
         ),
     ] = None
+    source: str | None = None
     title: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     relations: list[Relation] = Field(default_factory=list)

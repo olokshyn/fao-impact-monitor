@@ -17,11 +17,15 @@ from fao_impact_monitor.data_lake.stage import StageVersion
 from fao_impact_monitor.data_lake.stages.country_detect_stage import (
     CountryDetectStageVersion,
 )
+from fao_impact_monitor.data_lake.stages.embed_chunks_stage import (
+    EmbedChunksStageVersion,
+)
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import PdfCrawlStageVersion
 from fao_impact_monitor.data_lake.stages.pdf_extract_stage import PdfExtractStageVersion
 from fao_impact_monitor.data_lake.stages.tellus_document_fetch_stage import (
     TellusDocumentFetchStageVersion,
 )
+from fao_impact_monitor.data_lake.vectorstore import ChunkEmbedding
 from tests.data_lake.mock_http_server import MockHttpServer, mock_http_server
 
 T = TypeVar("T")
@@ -108,11 +112,13 @@ def document_store(
                 WebPageDocument,
                 PdfDocument,
                 TellusDocument,
+                ChunkEmbedding,
                 StageVersion,
                 PdfCrawlStageVersion,
                 PdfExtractStageVersion,
                 TellusDocumentFetchStageVersion,
                 CountryDetectStageVersion,
+                EmbedChunksStageVersion,
             ],
             skip_indexes=True,
         )

@@ -6,6 +6,12 @@ from .country_detect_stage import (
     CountryDetectStageResult,
     CountryDetectStageVersion,
 )
+from .embed_chunks_stage import (
+    EMBED_CHUNKS_STAGE_NAME,
+    EmbedChunksStage,
+    EmbedChunksStageResult,
+    EmbedChunksStageVersion,
+)
 from .pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
@@ -31,6 +37,7 @@ from .tellus_document_fetch_stage import (
 __all__ = [
     "CHUNK_ITERATOR_PARAM",
     "COUNTRY_DETECT_STAGE_NAME",
+    "EMBED_CHUNKS_STAGE_NAME",
     "PDF_CRAWL_STAGE_NAME",
     "PDF_EXTRACT_STAGE_NAME",
     "PIPELINE_FOR_PDF_PARAM",
@@ -41,6 +48,9 @@ __all__ = [
     "CountryDetectStageVersion",
     "CountryDetection",
     "DoclingWorker",
+    "EmbedChunksStage",
+    "EmbedChunksStageResult",
+    "EmbedChunksStageVersion",
     "PdfCrawlStage",
     "PdfCrawlStageResult",
     "PdfCrawlStageVersion",
