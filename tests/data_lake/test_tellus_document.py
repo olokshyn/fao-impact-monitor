@@ -8,7 +8,6 @@ from fao_impact_monitor.data_lake.documents.tellus_document import (
     TELLUS_DOCUMENT_TYPE,
     TellusDocument,
     build_tellus_full_cite_as,
-    build_tellus_metadata,
     format_page_ranges,
 )
 
@@ -74,25 +73,3 @@ def test_build_tellus_full_cite_as_with_pages() -> None:
         )
         == "FAO, Water Report. - 2021. Pages 2-3, 5. https://example.org/d1"
     )
-
-
-def test_build_tellus_metadata_omits_pages() -> None:
-    meta = build_tellus_metadata(
-        {
-            "document_id": "d1",
-            "title": "Water Report",
-            "source": {
-                "publisher": "FAO",
-                "publication_year": 2021,
-                "handle_url": "https://example.org/d1",
-            },
-        },
-        external_id="d1",
-    )
-    assert meta["document_id"] == "d1"
-    assert meta["title"] == "Water Report"
-    assert meta["year"] == "2021"
-    assert meta["url"] == "https://example.org/d1"
-    assert "pages" not in meta
-    assert meta["citation"] == "FAO, Water Report. - 2021 https://example.org/d1"
-    assert meta["short_cite_as"] == "[Water Report](https://example.org/d1)"

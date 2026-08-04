@@ -77,13 +77,20 @@ def test_fetch_writes_chunks_and_metadata(
     async def fetch_fn(document_id: str) -> dict[str, Any]:
         assert document_id == "doc-1"
         return {
+            "document_id": "doc-1",
             "document": {
                 "document_id": "doc-1",
-                "title": "Drought Outlook",
-                "source": {
-                    "publisher": "FAO",
-                    "publication_year": 2022,
-                    "handle_url": "https://example.org/doc-1",
+                "title_english": "Drought Outlook",
+                "handle_url": "https://example.org/doc-1",
+                "publisher": "FAO ;",
+                "publication_year": 2022,
+                "key_concepts": ["drought"],
+                "organizations": ["FAO"],
+                "metadata": {
+                    "title_english": "Drought Outlook",
+                    "key_concepts": ["drought", "outlook"],
+                    "organizations": ["FAO", "WFP"],
+                    "countries": ["Kenya"],
                 },
             },
             "chunks": [
@@ -98,12 +105,23 @@ def test_fetch_writes_chunks_and_metadata(
     assert result.status == Status.COMPLETED
     assert result.num_pages == 2
     assert doc.title == "Drought Outlook"
+    assert doc.url == "https://example.org/doc-1"
     assert doc.matched_pages == [2]
-    assert doc.metadata["citation"] == (
-        "FAO, Drought Outlook. - 2022 https://example.org/doc-1"
-    )
-    assert "Pages" not in doc.metadata["citation"]
-    assert doc.metadata["url"] == "https://example.org/doc-1"
+    assert doc.metadata == {
+        "document_id": "doc-1",
+        "title_english": "Drought Outlook",
+        "handle_url": "https://example.org/doc-1",
+        "publisher": "FAO ;",
+        "publication_year": 2022,
+        "metadata": {
+            "countries": ["Kenya"],
+        },
+    }
+    assert "key_concepts" not in doc.metadata
+    assert "organizations" not in doc.metadata
+    assert "title_english" not in doc.metadata["metadata"]
+    assert "key_concepts" not in doc.metadata["metadata"]
+    assert "organizations" not in doc.metadata["metadata"]
     assert len(doc.page_paths) == 2
     assert Path(doc.page_paths[0]).read_text(encoding="utf-8") == "Chunk A"
     assert Path(doc.page_paths[1]).read_text(encoding="utf-8") == "Chunk B"

@@ -12,10 +12,7 @@ from pydantic import Field
 from fao_impact_monitor.config import TellusConfig, get_config
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import Document, DocumentType
-from fao_impact_monitor.data_lake.documents.tellus_document import (
-    TellusDocument,
-    build_tellus_metadata,
-)
+from fao_impact_monitor.data_lake.documents.tellus_document import TellusDocument
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
@@ -29,8 +26,28 @@ logger = logging.getLogger(__name__)
 
 TELLUS_DOCUMENT_FETCH_STAGE_NAME = "tellus_document_fetch"
 _TELLUS_FETCH_PIPELINE_ID = "tellus-chunks-v1"
+_METADATA_KEYS_TO_DROP = frozenset({"key_concepts", "organizations"})
 
 FetchChunksFn = Callable[..., Awaitable[dict[str, Any]]]
+
+
+def _sanitize_tellus_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Drop bulky fields and nested values that duplicate the parent metadata."""
+    cleaned = {k: v for k, v in metadata.items() if k not in _METADATA_KEYS_TO_DROP}
+    nested = cleaned.get("metadata")
+    if isinstance(nested, dict):
+        parent = {k: v for k, v in cleaned.items() if k != "metadata"}
+        deduped = {
+            key: value
+            for key, value in nested.items()
+            if key not in _METADATA_KEYS_TO_DROP
+            and not (key in parent and parent[key] == value)
+        }
+        if deduped:
+            cleaned["metadata"] = deduped
+        else:
+            cleaned.pop("metadata", None)
+    return cleaned
 
 
 class TellusDocumentFetchStageResult(StageResult):
@@ -114,14 +131,56 @@ class TellusDocumentFetchStage(Stage):
                 status=Status.FAILED,
                 error=str(exc),
             )
+        document_id = payload.get("document_id")
+        if not document_id or document_id != document.external_id:
+            return TellusDocumentFetchStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=f"Document ID mismatch: {document_id} != {document.external_id}",
+            )
+        metadata = payload.get("document")
+        if not metadata or not isinstance(metadata, dict):
+            return TellusDocumentFetchStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=f"No metadata found for document {document.external_id}",
+            )
+        url = metadata.get("handle_url")
+        if not url or not isinstance(url, str):
+            return TellusDocumentFetchStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=f"No URL found for document {document.external_id}",
+            )
+        title: str | None = None
+        for key in [
+            "title",
+            "title_english",
+            "title_original",
+            "subtitle_english",
+            "subtitle_original",
+        ]:
+            title = metadata.get(key)
+            if title and isinstance(title, str):
+                break
+        if not title or not isinstance(title, str):
+            return TellusDocumentFetchStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=f"No title found for document {document.external_id}",
+            )
 
-        chunks = _extract_chunks(payload)
-        document_payload = _extract_document_payload(payload, document.external_id)
-        metadata = build_tellus_metadata(
-            document_payload,
-            external_id=document.external_id,
-        )
-        title = str(metadata.get("title") or document.title)
+        document.url = url
+        document.title = title
+        document.metadata = _sanitize_tellus_metadata(metadata)
+
+        chunks = payload.get("chunks")
+        if not chunks or not isinstance(chunks, list):
+            return TellusDocumentFetchStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=f"No chunks found for document {document.external_id}",
+            )
 
         if document.id is None:
             await document.insert()
@@ -135,8 +194,6 @@ class TellusDocumentFetchStage(Stage):
             page_path.write_text(content, encoding="utf-8")
             page_paths.append(str(page_path))
 
-        document.title = title
-        document.metadata = metadata
         document.page_paths = page_paths
         await document.save()
 
@@ -152,26 +209,3 @@ class TellusDocumentFetchStage(Stage):
         if self._fetch_fn is not None:
             return await self._fetch_fn(document_id)
         return await tellus_get_all_document_chunks(document_id, config=cfg)
-
-
-def _extract_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    chunks = payload.get("chunks")
-    if chunks is None:
-        return []
-    if not isinstance(chunks, list):
-        raise TypeError(f"Tellus chunks must be a list, got {type(chunks)}")
-    return [chunk for chunk in chunks if isinstance(chunk, dict)]
-
-
-def _extract_document_payload(
-    payload: dict[str, Any],
-    external_id: str,
-) -> dict[str, Any]:
-    document = payload.get("document")
-    if isinstance(document, dict):
-        return document
-    # Some Tellus responses put document fields at the top level alongside chunks.
-    top_level = {key: value for key, value in payload.items() if key != "chunks"}
-    if "document_id" not in top_level:
-        top_level["document_id"] = external_id
-    return top_level
