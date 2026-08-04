@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 PDF_MAGIC_BYTES = b"%PDF"
 HTML_MAGIC_BYTES = b"<!doctype"
 
+# HTTP bodies smaller than this (or empty) trigger a browser re-fetch. Catches
+# Chrome PDF-viewer shells and other near-empty redirect placeholders.
+_MIN_USEFUL_HTTP_BODY_BYTES = 512
+
 BodyCaptureMode = Literal["raw", "rendered"]
 
 # browserforge header data often lags Playwright's bundled Chrome version.
@@ -45,6 +49,10 @@ _SPA_SUBSTRING_MARKERS = (
     "__sveltekit",
     "q:container",
     "astro-island",
+)
+_DOWNLOAD_URL_RE = re.compile(
+    r"(?:/download(?:\?|$))|(?:/bitstreams/)|(?:\.pdf(?:\?|$))",
+    re.IGNORECASE,
 )
 
 _FETCH_FINAL_URL_JS = """
@@ -103,6 +111,43 @@ def looks_like_spa_shell(body: bytes) -> bool:
         return True
     # Script-heavy page with no crawlable links and almost no text.
     return script_count >= 3 and link_count == 0 and visible_len < 300
+
+
+def _url_looks_like_binary_download(url: str) -> bool:
+    """True for bitstream/PDF download URLs that should yield raw file bytes."""
+    return bool(_DOWNLOAD_URL_RE.search(url))
+
+
+def looks_like_chrome_pdf_viewer_shell(body: bytes) -> bool:
+    """True for Chrome's built-in PDF viewer HTML (empty body + embedder CSS)."""
+    if not body or body.startswith(PDF_MAGIC_BYTES) or not _looks_like_html(body):
+        return False
+    head = body.lstrip()[:2048].lower()
+    return b"pdf_embedder.css" in head or b"chrome-extension://" in head
+
+
+def looks_like_useless_http_body(body: bytes) -> bool:
+    """Return True when the HTTP body is empty, tiny, or a PDF-viewer shell.
+
+    Open Knowledge bitstream downloads sometimes return Chrome's built-in PDF
+    viewer HTML instead of ``%PDF`` bytes. Those need a raw browser fetch.
+    """
+    if body.startswith(PDF_MAGIC_BYTES):
+        return False
+    if not body or len(body) < _MIN_USEFUL_HTTP_BODY_BYTES:
+        return True
+    return looks_like_chrome_pdf_viewer_shell(body)
+
+
+def _is_acceptable_raw_capture(body: bytes) -> bool:
+    """Whether a browser raw capture looks like real content (not a viewer shell)."""
+    if not body:
+        return False
+    if body.startswith(PDF_MAGIC_BYTES):
+        return True
+    if looks_like_chrome_pdf_viewer_shell(body):
+        return False
+    return not (_looks_like_html(body) and len(body) < _MIN_USEFUL_HTTP_BODY_BYTES)
 
 
 def chromium_installed() -> bool:
@@ -217,14 +262,40 @@ async def _wait_for_settled_url(page: Any, *, settle_ms: int = 500) -> str:
     return str(page.url)
 
 
+async def _request_bytes(page: Any, url: str) -> bytes | None:
+    """Fetch ``url`` via Playwright's request API (bypasses Chrome PDF viewer)."""
+    context = getattr(page, "context", None)
+    request = getattr(context, "request", None) if context is not None else None
+    if request is None:
+        request = getattr(page, "request", None)
+    if request is None:
+        return None
+    response = await request.get(url)
+    body = await response.body()
+    return _as_bytes(body)
+
+
 async def _capture_final_body(page: Any) -> bytes:
-    """Fetch raw bytes for the final URL after SPA redirects settle."""
+    """Fetch raw bytes for the final URL after SPA redirects settle.
+
+    Prefer Playwright's ``request`` API so ``application/pdf`` responses are not
+    replaced by Chrome's built-in PDF viewer HTML shell. Fall back to an in-page
+    ``fetch`` when the request API is unavailable.
+    """
     last_error: BaseException | None = None
     for _ in range(5):
         try:
             url = await _wait_for_settled_url(page)
+            body = await _request_bytes(page, url)
+            if body is not None and _is_acceptable_raw_capture(body):
+                return body
             payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
-            return base64.b64decode(payload)
+            body = base64.b64decode(payload)
+            if _is_acceptable_raw_capture(body):
+                return body
+            wait_for_timeout = getattr(page, "wait_for_timeout", None)
+            if wait_for_timeout is not None:
+                await wait_for_timeout(500)
         except _BROWSER_ERRORS as exc:
             last_error = exc
             wait_for_timeout = getattr(page, "wait_for_timeout", None)
@@ -232,7 +303,11 @@ async def _capture_final_body(page: Any) -> bytes:
                 await wait_for_timeout(500)
     if last_error is not None:
         raise last_error
-    payload = await page.evaluate(_FETCH_FINAL_URL_JS, page.url)
+    url = str(page.url)
+    body = await _request_bytes(page, url)
+    if body is not None:
+        return body
+    payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
     return base64.b64decode(payload)
 
 
@@ -354,10 +429,14 @@ async def reliable_fetch(
     Falls back to the browser when:
 
     - HTTP fetch raises ``CurlError`` (transport / client failures), or
-    - the HTTP body looks like an empty SPA shell (no crawlable content without JS).
+    - the HTTP body looks like an empty SPA shell (no crawlable content without JS),
+      or
+    - the HTTP body is empty / tiny / a Chrome PDF-viewer shell (need raw PDF bytes).
 
     SPA shells are re-fetched with ``body_mode="rendered"`` so the hydrated DOM is
-    returned. Transport failures keep ``body_mode="raw"`` (needed for PDF bytes).
+    returned — except for bitstream/PDF download URLs, which use ``body_mode="raw"``
+    so Chrome's PDF viewer HTML is not returned. Transport failures and useless /
+    PDF-viewer bodies keep ``body_mode="raw"``.
 
     ``timeout`` is in seconds (same as ``fetch``) and is converted to milliseconds
     for ``browser_fetch``.
@@ -389,7 +468,25 @@ async def reliable_fetch(
             body_mode="raw",
         )
 
-    if looks_like_spa_shell(body):
+    spa_shell = looks_like_spa_shell(body)
+    useless = looks_like_useless_http_body(body)
+    if spa_shell and _url_looks_like_binary_download(url):
+        logger.info(
+            "SPA shell on download URL %s (%s bytes); re-fetching raw bytes",
+            url,
+            len(body),
+        )
+        return await browser_fetch(
+            url=url,
+            headless=headless,
+            disable_resources=disable_resources,
+            network_idle=network_idle,
+            solve_cloudflare=solve_cloudflare,
+            timeout=timeout * 1000,
+            retries=browser_retries,
+            body_mode="raw",
+        )
+    if spa_shell:
         logger.info(
             "SPA shell detected for %s (%s bytes); re-fetching rendered HTML",
             url,
@@ -404,5 +501,22 @@ async def reliable_fetch(
             timeout=timeout * 1000,
             retries=browser_retries,
             body_mode="rendered",
+        )
+    if useless:
+        logger.info(
+            "Useless/empty HTTP body for %s (%s bytes); "
+            "re-fetching raw bytes via browser",
+            url,
+            len(body),
+        )
+        return await browser_fetch(
+            url=url,
+            headless=headless,
+            disable_resources=disable_resources,
+            network_idle=network_idle,
+            solve_cloudflare=solve_cloudflare,
+            timeout=timeout * 1000,
+            retries=browser_retries,
+            body_mode="raw",
         )
     return body

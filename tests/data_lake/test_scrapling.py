@@ -12,6 +12,7 @@ from fao_impact_monitor.data_lake.scrapling import (
     ensure_chromium,
     fetch,
     looks_like_spa_shell,
+    looks_like_useless_http_body,
     reliable_fetch,
 )
 
@@ -27,15 +28,26 @@ FAO_SPA_SHELL = b"""<!DOCTYPE html>
 </html>
 """
 
-FAO_PDF_URL = (
+FAO_PDF_URL_1 = (
     "https://openknowledge.fao.org/bitstreams/"
     "b9c93694-9ef0-40e5-9321-9a0095b02316/download"
+)
+FAO_PDF_URL_2 = (
+    "https://openknowledge.fao.org/bitstreams/"
+    "c1caede2-ea98-46b0-b663-4cae429e05d3/download"
 )
 FAO_NEWS_URL = (
     "https://www.fao.org/newsroom/detail/"
     "el-nino-is-coming-here-is-where-the-risks-to-agriculture-are-highest/en"
 )
 YOUTUBE_URL = "https://www.youtube.com/watch?v=yezjIzb3OT8"
+
+CHROME_PDF_VIEWER_SHELL = (
+    b"<!DOCTYPE html><html><head>\n"
+    b'    <link rel="stylesheet" href="chrome-extension://'
+    b'mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css">\n'
+    b"  </head>\n  <body>\n    \n  \n\n</body></html>"
+)
 
 
 def test_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -130,6 +142,50 @@ def test_looks_like_spa_shell_detects_fao_app_shell() -> None:
     assert not looks_like_spa_shell(content_html)
 
 
+def test_looks_like_useless_http_body() -> None:
+    assert looks_like_useless_http_body(b"")
+    assert looks_like_useless_http_body(b"<html></html>")
+    assert looks_like_useless_http_body(CHROME_PDF_VIEWER_SHELL)
+    assert not looks_like_useless_http_body(b"%PDF-1.4" + b"x" * 600)
+    assert not looks_like_useless_http_body(
+        b"<!DOCTYPE html><html><body>" + (b"<p>content</p>" * 80) + b"</body></html>"
+    )
+
+
+def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_mock = AsyncMock(return_value=CHROME_PDF_VIEWER_SHELL)
+    browser_mock = AsyncMock(return_value=b"%PDF-1.4 real-bytes")
+    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        browser_mock,
+    )
+
+    body = asyncio.run(
+        reliable_fetch(
+            url=FAO_PDF_URL_2,
+            timeout=15,
+            fetch_retries=1,
+            solve_cloudflare=False,
+            browser_retries=2,
+        )
+    )
+
+    assert body.startswith(PDF_MAGIC_BYTES)
+    browser_mock.assert_awaited_once_with(
+        url=FAO_PDF_URL_2,
+        headless=True,
+        disable_resources=False,
+        network_idle=True,
+        solve_cloudflare=False,
+        timeout=15_000,
+        retries=2,
+        body_mode="raw",
+    )
+
+
 def test_browser_fetch_rendered_returns_page_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,7 +234,7 @@ def test_browser_fetch_rendered_returns_page_content(
 def test_reliable_fetch_uses_fetch_when_successful(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch_mock = AsyncMock(return_value=b"http-body")
+    fetch_mock = AsyncMock(return_value=b"http-body" + b"x" * 600)
     browser_mock = AsyncMock(return_value=b"browser-body")
     monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
@@ -202,7 +258,7 @@ def test_reliable_fetch_uses_fetch_when_successful(
         )
     )
 
-    assert body == b"http-body"
+    assert body.startswith(b"http-body")
     fetch_mock.assert_awaited_once_with(
         url="https://example.com/",
         stealthy_headers=False,
@@ -291,6 +347,40 @@ def test_reliable_fetch_uses_browser_for_spa_shell(
     )
 
 
+def test_reliable_fetch_spa_shell_on_download_url_uses_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_mock = AsyncMock(return_value=FAO_SPA_SHELL)
+    browser_mock = AsyncMock(return_value=b"%PDF-1.7 raw-bytes")
+    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        browser_mock,
+    )
+
+    body = asyncio.run(
+        reliable_fetch(
+            url=FAO_PDF_URL_2,
+            timeout=15,
+            fetch_retries=1,
+            solve_cloudflare=False,
+            browser_retries=2,
+        )
+    )
+
+    assert body.startswith(PDF_MAGIC_BYTES)
+    browser_mock.assert_awaited_once_with(
+        url=FAO_PDF_URL_2,
+        headless=True,
+        disable_resources=False,
+        network_idle=True,
+        solve_cloudflare=False,
+        timeout=15_000,
+        retries=2,
+        body_mode="raw",
+    )
+
+
 def test_reliable_fetch_does_not_fallback_on_non_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,8 +454,25 @@ def test_ensure_chromium_installs_when_missing(
 def test_browser_fetch_fao_pdf_follows_redirect() -> None:
     body = asyncio.run(
         browser_fetch(
-            url=FAO_PDF_URL,
+            url=FAO_PDF_URL_1,
             timeout=90_000,
+            solve_cloudflare=False,
+        )
+    )
+
+    assert body.startswith(PDF_MAGIC_BYTES)
+    assert len(body) > 1_000
+
+
+@pytest.mark.integration
+def test_reliable_fetch_fao_bitstream_download_returns_pdf() -> None:
+    """Bitstream /download URLs must yield PDF bytes, not a PDF-viewer HTML shell."""
+    body = asyncio.run(
+        reliable_fetch(
+            url=FAO_PDF_URL_2,
+            timeout=90,
+            fetch_retries=2,
+            browser_retries=2,
             solve_cloudflare=False,
         )
     )

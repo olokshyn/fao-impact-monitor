@@ -24,6 +24,20 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "justMyCode": false
+        },
+        {
+            "name": "Debug: test_reliable_fetch_fao_bitstream_download_returns_pdf",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/data_lake/test_scrapling.py::test_reliable_fetch_fao_bitstream_download_returns_pdf",
+                "-s",
+                "-vv"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
         }
     ]
 }

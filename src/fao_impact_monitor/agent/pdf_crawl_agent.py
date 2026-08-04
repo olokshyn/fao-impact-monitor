@@ -16,27 +16,42 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """\
 You are a link-extraction agent for the FAO Impact Monitor data lake.
 
-Your job is to read an HTML page and select the most important hyperlinks to
-crawl next in search of documentary PDF evidence (reports, publications,
-annexes, statistical briefs, knowledge-repository items).
+Your job is to read an HTML page and select only the hyperlinks that advance
+a crawl toward documentary PDF evidence.
 
-Prioritize links that:
-- Point directly at PDFs (href contains .pdf, or captions like "Download PDF",
-  "Full report", "Read the publication")
-- Likely lead to PDFs or documentary evidence (publications, resources,
-  documents, reports, libraries, repositories, annexes, data downloads)
-- Are substantive content hubs worth browsing (topic pages, document listings)
+Select ONLY:
+1. URLs that download a PDF directly (href contains .pdf, or clear download
+   actions such as "Download PDF", "Full report", "Download publication").
+2. URLs that lead to a PDF abstract / detail page — a page that shows the
+   document title and abstract (or summary) and a PDF download button/link.
+3. URLs that lead to publication / document listing hubs that are clearly on
+   the path to PDFs (archives, repositories, annex libraries, "publications",
+   "resources", "documents", "reports"). Prefer these over generic site pages.
+4. URLs that lead to the next page of search results (pagination: "Next",
+   page numbers, "Load more" for results). Search-result pages must be
+   paginated through so later result pages can be crawled.
 
-Deprioritize or ignore page chrome: login, language switchers, share widgets,
-cookie banners, identical site-wide footer/header noise, pure social media.
+Do NOT select:
+- Keyword / tag / topic facet links
+- Links to parts of a document (chapters, sections, table of contents anchors)
+- Author, contributor, or profile pages
+- Login, language switchers, share widgets, cookie banners, social media,
+  footer/header chrome, unrelated site navigation
+
+Quality over quantity: prefer fewer, highly relevant URLs over a long noisy
+list. If unsure whether a link advances toward a PDF (download, abstract page,
+or listing hub), omit it.
+
+Ordering:
+- Return URLs in the same order they appear on the page. Listing/search pages
+  usually already rank results by relevance; preserve that order.
+- Put pagination ("next page") links after the on-page result/document links.
 
 Critical rules:
 1. Copy each URL string EXACTLY as it appears in the page body/source (href or
    visible URL text). Do not invent, normalize, or absolutize URLs.
 2. Return at most the requested maximum number of URLs.
-3. Prefer evidence-bearing links; if more candidates exist than the cap, keep
-   the most important ones.
-4. For each URL provide a short reason citing the link text or nearby context.
+3. For each URL provide a short reason citing the link text or nearby context.
 """
 
 
@@ -85,7 +100,11 @@ def _user_prompt(
 ) -> str:
     parts = [
         f"Page URL: {page_url}",
-        f"Return at most {max_urls} important links.",
+        (
+            f"Return at most {max_urls} highly relevant links "
+            "(PDF downloads, PDF abstract pages, publication/document listing "
+            "hubs, and search pagination only), in page order."
+        ),
         "Page body follows:",
         page_body,
     ]
@@ -103,6 +122,18 @@ def _user_prompt(
 
 def _validate_urls_in_body(urls: list[str], page_body: str) -> list[str]:
     return [url for url in urls if url not in page_body]
+
+
+def _log_links_detected(page_url: str, count: int) -> None:
+    message = f"pdf_crawl links detected: {count} for {page_url}"
+    print(message, flush=True)
+    logger.info(message)
+
+
+def _log_missing_url(page_url: str, missing_url: str) -> None:
+    message = f"pdf_crawl URL not found in page body for {page_url}: {missing_url}"
+    print(message, flush=True)
+    logger.warning(message)
 
 
 def build_link_agent(model: BaseChatModel) -> Any:
@@ -126,21 +157,14 @@ def build_link_agent(model: BaseChatModel) -> Any:
         if not isinstance(result, PdfLinkCandidateList):
             result = PdfLinkCandidateList.model_validate(result)
         urls = [link.url for link in result.links[: state["max_urls"]]]
-        logger.info(
-            "Link agent extracted %s URL(s) from %s",
-            len(urls),
-            state["page_url"],
-        )
+        _log_links_detected(state["page_url"], len(urls))
         return {"urls": urls, "missing_urls": []}
 
     async def validate(state: AgentState) -> dict[str, Any]:
         missing = _validate_urls_in_body(state["urls"], state["page_body"])
         if missing:
-            logger.warning(
-                "Link agent produced %s URL(s) missing from body for %s",
-                len(missing),
-                state["page_url"],
-            )
+            for missing_url in missing:
+                _log_missing_url(state["page_url"], missing_url)
             return {
                 "missing_urls": missing,
                 "retries_left": state["retries_left"] - 1,
@@ -191,4 +215,7 @@ async def extract_page_urls(
     )
     urls = final_state.get("urls", [])
     # Drop any still-invalid URLs after retries are exhausted.
+    still_missing = _validate_urls_in_body(urls, page_body)
+    for missing_url in still_missing:
+        _log_missing_url(page_url, missing_url)
     return [url for url in urls if url in page_body][:max_urls]
