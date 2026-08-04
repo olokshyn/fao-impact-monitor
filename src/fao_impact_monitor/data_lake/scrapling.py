@@ -129,8 +129,9 @@ def looks_like_chrome_pdf_viewer_shell(body: bytes) -> bool:
 def looks_like_useless_http_body(body: bytes) -> bool:
     """Return True when the HTTP body is empty, tiny, or a PDF-viewer shell.
 
-    Open Knowledge bitstream downloads sometimes return Chrome's built-in PDF
-    viewer HTML instead of ``%PDF`` bytes. Those need a raw browser fetch.
+    Near-empty bodies and viewer shells need a browser re-fetch. FAO bitstream
+    URLs often return an SPA shell over HTTP (handled separately); the Chrome
+    PDF viewer only appears when Chromium navigates to ``application/pdf``.
     """
     if body.startswith(PDF_MAGIC_BYTES):
         return False
@@ -146,6 +147,10 @@ def _is_acceptable_raw_capture(body: bytes) -> bool:
     if body.startswith(PDF_MAGIC_BYTES):
         return True
     if looks_like_chrome_pdf_viewer_shell(body):
+        return False
+    # FAO bitstream API URLs under /bitstreams/ often return JSON metadata.
+    head = body.lstrip()[:1]
+    if head in (b"{", b"["):
         return False
     return not (_looks_like_html(body) and len(body) < _MIN_USEFUL_HTTP_BODY_BYTES)
 
@@ -262,6 +267,28 @@ async def _wait_for_settled_url(page: Any, *, settle_ms: int = 500) -> str:
     return str(page.url)
 
 
+def _response_may_be_pdf(response: Any) -> bool:
+    """True when a response is worth reading for PDF bytes (cheap pre-filter)."""
+    headers = getattr(response, "headers", None) or {}
+    content_type = str(headers.get("content-type", "")).lower()
+    if "application/pdf" in content_type or "octet-stream" in content_type:
+        return True
+    resp_url = str(getattr(response, "url", "")).lower()
+    return (
+        resp_url.endswith(".pdf")
+        or ".pdf?" in resp_url
+        # FAO serves the file at .../bitstreams/<uuid>/content
+        or ("/bitstreams/" in resp_url and resp_url.rstrip("/").endswith("/content"))
+    )
+
+
+def _prefer_network_capture(current: bytes | None, candidate: bytes) -> bytes:
+    """Keep the larger PDF body when several PDF responses are seen."""
+    if current is None:
+        return candidate
+    return candidate if len(candidate) >= len(current) else current
+
+
 async def _request_bytes(page: Any, url: str) -> bytes | None:
     """Fetch ``url`` via Playwright's request API (bypasses Chrome PDF viewer)."""
     context = getattr(page, "context", None)
@@ -281,11 +308,15 @@ async def _capture_final_body(page: Any) -> bytes:
     Prefer Playwright's ``request`` API so ``application/pdf`` responses are not
     replaced by Chrome's built-in PDF viewer HTML shell. Fall back to an in-page
     ``fetch`` when the request API is unavailable.
+
+    Prefer capturing the network response during navigation (see
+    ``browser_fetch``) so this path is only a fallback and does not
+    re-download large PDFs on the happy path.
     """
     last_error: BaseException | None = None
-    for _ in range(5):
+    for _ in range(3):
         try:
-            url = await _wait_for_settled_url(page)
+            url = await _wait_for_settled_url(page, settle_ms=250)
             body = await _request_bytes(page, url)
             if body is not None and _is_acceptable_raw_capture(body):
                 return body
@@ -295,20 +326,25 @@ async def _capture_final_body(page: Any) -> bytes:
                 return body
             wait_for_timeout = getattr(page, "wait_for_timeout", None)
             if wait_for_timeout is not None:
-                await wait_for_timeout(500)
+                await wait_for_timeout(250)
         except _BROWSER_ERRORS as exc:
             last_error = exc
             wait_for_timeout = getattr(page, "wait_for_timeout", None)
             if wait_for_timeout is not None:
-                await wait_for_timeout(500)
+                await wait_for_timeout(250)
     if last_error is not None:
         raise last_error
     url = str(page.url)
     body = await _request_bytes(page, url)
-    if body is not None:
+    if body is not None and _is_acceptable_raw_capture(body):
         return body
     payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
-    return base64.b64decode(payload)
+    body = base64.b64decode(payload)
+    if _is_acceptable_raw_capture(body):
+        return body
+    if body is not None:
+        return body
+    raise RuntimeError(f"Failed to capture acceptable raw body for {url}")
 
 
 async def _capture_rendered_html(page: Any) -> bytes:
@@ -344,9 +380,10 @@ async def browser_fetch(
 ) -> bytes:
     """Fetch ``url`` with Scrapling ``StealthyFetcher`` and return the response body.
 
-    ``body_mode="raw"`` uses an in-page ``fetch`` of the final URL so SPA redirects
-    (and Chrome's PDF viewer) still yield the raw response bytes rather than
-    viewer HTML.
+    ``body_mode="raw"`` captures network response bodies during navigation (so
+    ``application/pdf`` bytes are kept before Chrome replaces them with its PDF
+    viewer shell). Falls back to Playwright's request API / in-page ``fetch`` of
+    the final URL when no suitable network body was seen.
 
     ``body_mode="rendered"`` returns ``page.content()`` after the DOM settles —
     needed for SPA shells where useful markup only appears after JS runs.
@@ -363,16 +400,66 @@ async def browser_fetch(
     await asyncio.to_thread(ensure_chromium)
     stealthy_fetcher = _stealthy_fetcher()
     captured: dict[str, bytes] = {}
+    network_tasks: list[asyncio.Task[None]] = []
+
+    async def page_setup(page: Any) -> None:
+        """Register listeners before navigation so PDF bytes are not re-downloaded."""
+        if body_mode != "raw":
+            return
+        on = getattr(page, "on", None)
+        if on is None:
+            return
+
+        def on_response(response: Any) -> None:
+            if not _response_may_be_pdf(response):
+                return
+
+            async def _read() -> None:
+                try:
+                    body = _as_bytes(await response.body())
+                except Exception:
+                    logger.debug(
+                        "Could not read browser response body for %s",
+                        getattr(response, "url", "?"),
+                        exc_info=True,
+                    )
+                    return
+                # Only keep real PDF bytes — FAO also serves JSON under
+                # /bitstreams/ URLs, which must not win the capture.
+                if not body.startswith(PDF_MAGIC_BYTES):
+                    return
+                captured["network_body"] = _prefer_network_capture(
+                    captured.get("network_body"),
+                    body,
+                )
+
+            network_tasks.append(asyncio.create_task(_read()))
+
+        on("response", on_response)
 
     async def page_action(page: Any) -> Any:
+        if network_tasks:
+            await asyncio.gather(*network_tasks, return_exceptions=True)
+            network_tasks.clear()
         if body_mode == "rendered":
             captured["body"] = await _capture_rendered_html(page)
         else:
-            captured["body"] = await _capture_final_body(page)
+            network_body = captured.get("network_body")
+            if network_body is not None and network_body.startswith(PDF_MAGIC_BYTES):
+                logger.debug(
+                    "Using network-captured PDF for %s (%s bytes)",
+                    url,
+                    len(network_body),
+                )
+                captured["body"] = network_body
+            else:
+                captured["body"] = await _capture_final_body(page)
         return page
 
     async def _fetch(*, with_cloudflare: bool) -> bytes:
         captured.pop("body", None)
+        captured.pop("network_body", None)
+        network_tasks.clear()
         try:
             await stealthy_fetcher.async_fetch(
                 url,
@@ -382,6 +469,7 @@ async def browser_fetch(
                 solve_cloudflare=with_cloudflare,
                 timeout=timeout,
                 retries=retries,
+                page_setup=page_setup,
                 page_action=page_action,
             )
         except _BROWSER_ERRORS:

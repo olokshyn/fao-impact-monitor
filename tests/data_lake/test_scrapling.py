@@ -84,6 +84,7 @@ def test_fetch_encodes_string_body(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
     async def run_page_action(_url: str, **kwargs: object) -> SimpleNamespace:
+        page_setup = kwargs.get("page_setup")
         page_action = kwargs["page_action"]
         assert callable(page_action)
         page = SimpleNamespace(url="https://example.com/protected")
@@ -94,6 +95,11 @@ def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) ->
             return "YnJvd3Nlci1ib2R5"
 
         page.evaluate = evaluate
+        page.on = lambda _event, _handler: None
+        if callable(page_setup):
+            result = page_setup(page)
+            if asyncio.iscoroutine(result):
+                await result
         await page_action(page)
         return SimpleNamespace(body=b"unused")
 
@@ -125,8 +131,69 @@ def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) ->
         solve_cloudflare=True,
         timeout=60_000,
         retries=2,
+        page_setup=ANY,
         page_action=ANY,
     )
+
+
+def test_browser_fetch_uses_network_captured_pdf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_bytes = b"%PDF-1.4 network-captured"
+
+    async def run_with_network(_url: str, **kwargs: object) -> SimpleNamespace:
+        page_setup = kwargs["page_setup"]
+        page_action = kwargs["page_action"]
+        assert callable(page_setup)
+        assert callable(page_action)
+
+        handlers: list[object] = []
+
+        def on(event: str, handler: object) -> None:
+            assert event == "response"
+            handlers.append(handler)
+
+        page = SimpleNamespace(url="https://example.com/doc.pdf", on=on)
+        result = page_setup(page)
+        if asyncio.iscoroutine(result):
+            await result
+
+        async def response_body() -> bytes:
+            return pdf_bytes
+
+        fake_response = SimpleNamespace(
+            url="https://cdn.example.com/file.pdf",
+            headers={"content-type": "application/pdf"},
+            body=response_body,
+        )
+
+        assert handlers
+        handler = handlers[0]
+        assert callable(handler)
+        handler(fake_response)
+        await page_action(page)
+        return SimpleNamespace(body=b"unused")
+
+    async_fetch = AsyncMock(side_effect=run_with_network)
+    stealthy_fetcher = SimpleNamespace(async_fetch=async_fetch)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.ensure_chromium",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling._stealthy_fetcher",
+        lambda: stealthy_fetcher,
+    )
+
+    body = asyncio.run(
+        browser_fetch(
+            url="https://example.com/doc.pdf",
+            solve_cloudflare=False,
+            retries=1,
+        )
+    )
+
+    assert body == pdf_bytes
 
 
 def test_looks_like_spa_shell_detects_fao_app_shell() -> None:
@@ -190,6 +257,7 @@ def test_browser_fetch_rendered_returns_page_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def run_page_action(_url: str, **kwargs: object) -> SimpleNamespace:
+        page_setup = kwargs.get("page_setup")
         page_action = kwargs["page_action"]
         assert callable(page_action)
         page = SimpleNamespace(url="https://example.com/spa")
@@ -206,6 +274,11 @@ def test_browser_fetch_rendered_returns_page_content(
         page.wait_for_timeout = wait_for_timeout
         page.wait_for_selector = wait_for_selector
         page.content = content
+        page.on = lambda _event, _handler: None
+        if callable(page_setup):
+            result = page_setup(page)
+            if asyncio.iscoroutine(result):
+                await result
         await page_action(page)
         return SimpleNamespace(body=b"unused")
 
