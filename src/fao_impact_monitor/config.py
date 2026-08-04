@@ -43,6 +43,8 @@ class PdfCrawlConfig(BaseSettings):
     max_urls_per_page: int = 10
     llm_model: str = "openai:openai.gpt-5.6-luna"
     max_agent_retries: int = 3
+    # How many descendant URL hops a details-page title remains valid for.
+    detected_title_validity_depth: int = 3
 
 
 class PdfExtractConfig(BaseSettings):

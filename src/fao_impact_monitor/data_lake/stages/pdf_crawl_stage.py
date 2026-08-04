@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 from beanie import PydanticObjectId
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from fao_impact_monitor.agent.pdf_crawl_agent import extract_page_urls
+from fao_impact_monitor.agent.pdf_crawl_agent import PdfPageExtract, extract_page_urls
 from fao_impact_monitor.config import PdfCrawlConfig, get_config
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import (
@@ -40,9 +40,11 @@ PIPELINE_FOR_WEB_PARAM = "pipeline_for_web"
 PIPELINE_FOR_PDF_PARAM = "pipeline_for_pdf"
 
 FetchFn = Callable[..., Awaitable[bytes]]
-ExtractFn = Callable[..., Awaitable[list[str]]]
+ExtractFn = Callable[..., Awaitable[PdfPageExtract]]
 
 ContentKind = Literal["pdf", "html", "other"]
+# Stack entry: (url, depth, inherited_title, title_ttl)
+StackEntry = tuple[str, int, str | None, int]
 
 
 def _require_pipeline_params(stage_params: dict[str, Any]) -> tuple[str, str]:
@@ -73,6 +75,7 @@ class PdfCrawlStageVersion(StageVersion):
     max_urls_per_page: int
     max_pdfs: int
     max_urls: int | None = None
+    detected_title_validity_depth: int = 3
 
     class Settings:
         class_id_value = PDF_CRAWL_STAGE_NAME
@@ -98,7 +101,8 @@ class PdfCrawlStage(Stage):
         cfg = self._config or get_config().pdf_crawl
         payload = (
             f"{cfg.llm_model}|{cfg.max_url_depth}|{cfg.max_urls_per_page}|"
-            f"{cfg.max_pdfs}|{cfg.max_urls}|{cfg.max_agent_retries}"
+            f"{cfg.max_pdfs}|{cfg.max_urls}|{cfg.max_agent_retries}|"
+            f"{cfg.detected_title_validity_depth}"
         )
         version_id = hashlib.sha256(payload.encode()).hexdigest()[:32]
         existing = await PdfCrawlStageVersion.find_one(
@@ -113,6 +117,7 @@ class PdfCrawlStage(Stage):
             max_urls_per_page=cfg.max_urls_per_page,
             max_pdfs=cfg.max_pdfs,
             max_urls=cfg.max_urls,
+            detected_title_validity_depth=cfg.detected_title_validity_depth,
         )
         await version.insert()
         return version
@@ -236,14 +241,15 @@ class PdfCrawlStage(Stage):
             return seed_result
 
         page_text = _decode_html(body)
-        child_urls = await self._extract_urls(
+        seed_extract = await self._extract_page(
             page_url=seed_doc.url,
             page_body=page_text,
             cfg=cfg,
         )
         await self._dfs(
             seed_doc=seed_doc,
-            initial_urls=child_urls,
+            initial_urls=seed_extract.urls,
+            initial_title=seed_extract.document_title,
             cfg=cfg,
             version_id=version_id,
             pipeline_for_web=pipeline_for_web,
@@ -258,13 +264,13 @@ class PdfCrawlStage(Stage):
         del cfg
         return await self.get_version()
 
-    async def _extract_urls(
+    async def _extract_page(
         self,
         *,
         page_url: str,
         page_body: str,
         cfg: PdfCrawlConfig,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         if self._extract_fn is not None:
             return await self._extract_fn(
                 page_url=page_url,
@@ -286,18 +292,21 @@ class PdfCrawlStage(Stage):
         *,
         seed_doc: WebPageDocument,
         initial_urls: list[str],
+        initial_title: str | None,
         cfg: PdfCrawlConfig,
         version_id: str,
         pipeline_for_web: str,
         pipeline_for_pdf: str,
         urls_processed: int,
     ) -> None:
-        # Stack stores (url, depth). DFS reaches PDF leaves before exhausting
-        # sibling web pages (unlike BFS). Each URL is scheduled at most once via
-        # ``visited``. Additional parents that discover the same URL are recorded
-        # in ``parents_by_url`` and linked when the URL finishes (or immediately
-        # if it is already COMPLETED).
-        stack: list[tuple[str, int]] = []
+        # Stack stores (url, depth, inherited_title, title_ttl). DFS reaches PDF
+        # leaves before exhausting sibling web pages (unlike BFS). Each URL is
+        # scheduled at most once via ``visited``. Additional parents that
+        # discover the same URL are recorded in ``parents_by_url`` and linked
+        # when the URL finishes (or immediately if it is already COMPLETED).
+        # Titles are detected on WEB_PAGE detail pages but applied to child
+        # PDFs; a newer title overrides the inherited one and resets TTL.
+        stack: list[StackEntry] = []
         visited: set[str] = {seed_doc.url}
         parents_by_url: dict[str, list[Document]] = {}
         pdf_count = 0
@@ -307,6 +316,8 @@ class PdfCrawlStage(Stage):
             raw_url: str,
             parent: Document,
             depth: int,
+            title: str | None,
+            title_ttl: int,
         ) -> None:
             absolute = urljoin(parent.url, raw_url)
             if absolute in visited:
@@ -320,11 +331,23 @@ class PdfCrawlStage(Stage):
                 return
             visited.add(absolute)
             parents_by_url.setdefault(absolute, []).append(parent)
-            stack.append((absolute, depth))
+            stack.append((absolute, depth, title, title_ttl))
 
+        seed_title, seed_ttl = _child_title_state(
+            detected_title=initial_title,
+            inherited_title=None,
+            inherited_ttl=0,
+            validity_depth=cfg.detected_title_validity_depth,
+        )
         # Push in reverse so the first link is explored first (LIFO).
         for raw_url in reversed(initial_urls):
-            await schedule(raw_url=raw_url, parent=seed_doc, depth=1)
+            await schedule(
+                raw_url=raw_url,
+                parent=seed_doc,
+                depth=1,
+                title=seed_title,
+                title_ttl=seed_ttl,
+            )
 
         while stack:
             if pdf_count >= cfg.max_pdfs:
@@ -334,7 +357,7 @@ class PdfCrawlStage(Stage):
                 logger.info("Stopping DFS: reached max_urls=%s", cfg.max_urls)
                 break
 
-            url, depth = stack.pop()
+            url, depth, title, title_ttl = stack.pop()
             if depth > cfg.max_url_depth:
                 parents_by_url.pop(url, None)
                 continue
@@ -379,6 +402,8 @@ class PdfCrawlStage(Stage):
                         source=seed_doc.source,
                         pipeline_statuses={pipeline_for_pdf: Status.PENDING},
                     )
+                if title:
+                    pdf_doc.title = title
                 content_path = await _persist_content(
                     pdf_doc, body, cfg.save_dir, suffix=".pdf"
                 )
@@ -427,13 +452,47 @@ class PdfCrawlStage(Stage):
                 continue
 
             page_text = _decode_html(body)
-            child_urls = await self._extract_urls(
+            page_extract = await self._extract_page(
                 page_url=page_doc.url,
                 page_body=page_text,
                 cfg=cfg,
             )
-            for raw_url in reversed(child_urls):
-                await schedule(raw_url=raw_url, parent=page_doc, depth=depth + 1)
+            child_title, child_ttl = _child_title_state(
+                detected_title=page_extract.document_title,
+                inherited_title=title,
+                inherited_ttl=title_ttl,
+                validity_depth=cfg.detected_title_validity_depth,
+            )
+            for raw_url in reversed(page_extract.urls):
+                await schedule(
+                    raw_url=raw_url,
+                    parent=page_doc,
+                    depth=depth + 1,
+                    title=child_title,
+                    title_ttl=child_ttl,
+                )
+
+
+def _child_title_state(
+    *,
+    detected_title: str | None,
+    inherited_title: str | None,
+    inherited_ttl: int,
+    validity_depth: int,
+) -> tuple[str | None, int]:
+    """Return ``(title, ttl)`` to push onto child stack entries.
+
+    A newly detected details-page title overrides any parent title and resets
+    TTL to ``validity_depth``. Otherwise the inherited title decays by one hop.
+    """
+    if detected_title:
+        if validity_depth <= 0:
+            return None, 0
+        return detected_title, validity_depth
+    next_ttl = inherited_ttl - 1
+    if inherited_title and next_ttl > 0:
+        return inherited_title, next_ttl
+    return None, 0
 
 
 def classify_content(body: bytes) -> ContentKind:

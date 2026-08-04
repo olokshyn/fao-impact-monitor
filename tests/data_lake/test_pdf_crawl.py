@@ -5,6 +5,7 @@ from typing import Any, TypeVar
 
 from fao_impact_monitor.agent.pdf_crawl_agent import (
     PdfLinkCandidateList,
+    PdfPageExtract,
     extract_page_urls,
 )
 from fao_impact_monitor.config import PdfCrawlConfig
@@ -24,6 +25,7 @@ from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PIPELINE_FOR_WEB_PARAM,
     PdfCrawlStage,
     PdfCrawlStageResult,
+    _child_title_state,
     classify_content,
 )
 
@@ -143,9 +145,9 @@ def test_incomplete_existing_seed_is_reprocessed(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_url, page_body, max_urls, max_retries, model
-        return []
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -240,12 +242,12 @@ def test_html_seed_creates_children_and_bidirectional_relations(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del max_urls, max_retries, model
         extract_calls.append(page_url)
         if page_url == seed.url:
-            return ["/page1", "/file.pdf"]
-        return []
+            return PdfPageExtract(urls=["/page1", "/file.pdf"])
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -345,14 +347,14 @@ def test_shared_child_processed_once_with_both_parent_relations(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_body, max_urls, max_retries, model
         extract_calls.append(page_url)
         if page_url == seed.url:
-            return ["/page1", "/page2"]
+            return PdfPageExtract(urls=["/page1", "/page2"])
         if page_url in {page1, page2}:
-            return ["/page3"]
-        return []
+            return PdfPageExtract(urls=["/page3"])
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -414,10 +416,10 @@ def test_completed_child_gets_relations_only(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_body, max_urls, max_retries, model
         assert page_url == seed.url
-        return ["/done.pdf"]
+        return PdfPageExtract(urls=["/done.pdf"])
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -463,11 +465,11 @@ def test_max_pdfs_stops_dfs(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_body, max_urls, max_retries, model
         if page_url == seed.url:
-            return ["/a.pdf", "/b.pdf"]
-        return []
+            return PdfPageExtract(urls=["/a.pdf", "/b.pdf"])
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -508,11 +510,11 @@ def test_max_urls_stops_dfs(
         max_urls: int,
         max_retries: int,
         model: Any = None,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_body, max_urls, max_retries, model
         if page_url == seed.url:
-            return ["/page1", "/page2"]
-        return []
+            return PdfPageExtract(urls=["/page1", "/page2"])
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
@@ -597,7 +599,7 @@ def test_link_agent_validation_reprompts_for_missing_urls() -> None:
 
     body = '<!doctype html><a href="/real.pdf">Download report PDF</a>'
     model = FakeModel()
-    urls = asyncio.run(
+    result = asyncio.run(
         extract_page_urls(
             page_url="https://example.com/",
             page_body=body,
@@ -606,5 +608,234 @@ def test_link_agent_validation_reprompts_for_missing_urls() -> None:
             model=model,  # type: ignore[arg-type]
         )
     )
-    assert urls == ["/real.pdf"]
+    assert result.urls == ["/real.pdf"]
+    assert result.document_title is None
     assert model.structured.calls == 2
+
+
+def test_link_agent_validation_reprompts_for_missing_title() -> None:
+    title = "Zimbabwe: Project Highlights - OSRO/ZIM/040/GER"
+
+    class FakeStructured:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ainvoke(self, _messages: Any) -> PdfLinkCandidateList:
+            self.calls += 1
+            if self.calls == 1:
+                return PdfLinkCandidateList.model_validate(
+                    {
+                        "document_title": "Hallucinated Title",
+                        "links": [{"url": "/file.pdf", "reason": "download"}],
+                    }
+                )
+            return PdfLinkCandidateList.model_validate(
+                {
+                    "document_title": title,
+                    "links": [{"url": "/file.pdf", "reason": "download"}],
+                }
+            )
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.structured = FakeStructured()
+
+        def with_structured_output(self, _schema: Any) -> FakeStructured:
+            return self.structured
+
+    body = f'<!doctype html><h1>{title}</h1><a href="/file.pdf">Download PDF</a>'
+    model = FakeModel()
+    result = asyncio.run(
+        extract_page_urls(
+            page_url="https://example.com/handle/doc",
+            page_body=body,
+            max_urls=5,
+            max_retries=3,
+            model=model,  # type: ignore[arg-type]
+        )
+    )
+    assert result.urls == ["/file.pdf"]
+    assert result.document_title == title
+    assert model.structured.calls == 2
+
+
+def test_child_title_state_override_and_expiry() -> None:
+    assert _child_title_state(
+        detected_title="New",
+        inherited_title="Old",
+        inherited_ttl=2,
+        validity_depth=3,
+    ) == ("New", 3)
+    assert _child_title_state(
+        detected_title=None,
+        inherited_title="Old",
+        inherited_ttl=2,
+        validity_depth=3,
+    ) == ("Old", 1)
+    assert _child_title_state(
+        detected_title=None,
+        inherited_title="Old",
+        inherited_ttl=1,
+        validity_depth=3,
+    ) == (None, 0)
+    assert _child_title_state(
+        detected_title="Only",
+        inherited_title=None,
+        inherited_ttl=0,
+        validity_depth=0,
+    ) == (None, 0)
+
+
+def test_details_page_title_applied_to_child_pdf(
+    document_store: dict[str, Document],
+    pdf_crawl_dirs: PdfCrawlConfig,
+    run_async: RunAsync[Any],
+) -> None:
+    seed = _seed("https://example.com/handle/doc")
+    pdf_url = "https://example.com/file.pdf"
+    title = "Zimbabwe: Project Highlights - OSRO/ZIM/040/GER"
+
+    async def fetch(*, url: str) -> bytes:
+        if url == seed.url:
+            return (
+                b"<!doctype html><html><body>"
+                b"<h1>Zimbabwe: Project Highlights - OSRO/ZIM/040/GER</h1>"
+                b'<a href="/file.pdf">Download PDF</a>'
+                b"</body></html>"
+            )
+        return b"%PDF-1.4\nchild"
+
+    async def extract(
+        *,
+        page_url: str,
+        page_body: str,
+        max_urls: int,
+        max_retries: int,
+        model: Any = None,
+    ) -> PdfPageExtract:
+        del page_body, max_urls, max_retries, model
+        if page_url == seed.url:
+            return PdfPageExtract(urls=["/file.pdf"], document_title=title)
+        return PdfPageExtract()
+
+    stage = PdfCrawlStage(
+        fetch_fn=fetch,
+        extract_fn=extract,
+        config=pdf_crawl_dirs,
+    )
+    run_async(stage.run(seed, STAGE_PARAMS, []))
+    _refresh(document_store)
+    pdf = document_store[pdf_url]
+    assert isinstance(pdf, PdfDocument)
+    assert pdf.title == title
+
+
+def test_child_details_title_overrides_parent_title(
+    document_store: dict[str, Document],
+    pdf_crawl_dirs: PdfCrawlConfig,
+    run_async: RunAsync[Any],
+) -> None:
+    seed = _seed("https://example.com/")
+    details = "https://example.com/details"
+    pdf_url = "https://example.com/file.pdf"
+
+    async def fetch(*, url: str) -> bytes:
+        if url == seed.url:
+            return (
+                b"<!doctype html><html><body>"
+                b'<a href="/details">Document details</a>'
+                b"</body></html>"
+            )
+        if url == details:
+            return (
+                b"<!doctype html><html><body>"
+                b"<h1>Child Title</h1>"
+                b'<a href="/file.pdf">Download PDF</a>'
+                b"</body></html>"
+            )
+        return b"%PDF-1.4\nchild"
+
+    async def extract(
+        *,
+        page_url: str,
+        page_body: str,
+        max_urls: int,
+        max_retries: int,
+        model: Any = None,
+    ) -> PdfPageExtract:
+        del page_body, max_urls, max_retries, model
+        if page_url == seed.url:
+            return PdfPageExtract(
+                urls=["/details"],
+                document_title="Parent Title",
+            )
+        if page_url == details:
+            return PdfPageExtract(
+                urls=["/file.pdf"],
+                document_title="Child Title",
+            )
+        return PdfPageExtract()
+
+    stage = PdfCrawlStage(
+        fetch_fn=fetch,
+        extract_fn=extract,
+        config=pdf_crawl_dirs,
+    )
+    run_async(stage.run(seed, STAGE_PARAMS, []))
+    _refresh(document_store)
+    assert document_store[pdf_url].title == "Child Title"
+
+
+def test_title_expires_after_validity_depth(
+    document_store: dict[str, Document],
+    pdf_crawl_dirs: PdfCrawlConfig,
+    run_async: RunAsync[Any],
+) -> None:
+    pdf_crawl_dirs.detected_title_validity_depth = 1
+    seed = _seed("https://example.com/details")
+    mid = "https://example.com/mid"
+    pdf_url = "https://example.com/file.pdf"
+
+    async def fetch(*, url: str) -> bytes:
+        if url == seed.url:
+            return (
+                b"<!doctype html><html><body>"
+                b"<h1>Only One Hop</h1>"
+                b'<a href="/mid">Next</a>'
+                b"</body></html>"
+            )
+        if url == mid:
+            return (
+                b"<!doctype html><html><body>"
+                b'<a href="/file.pdf">Download PDF</a>'
+                b"</body></html>"
+            )
+        return b"%PDF-1.4\nchild"
+
+    async def extract(
+        *,
+        page_url: str,
+        page_body: str,
+        max_urls: int,
+        max_retries: int,
+        model: Any = None,
+    ) -> PdfPageExtract:
+        del page_body, max_urls, max_retries, model
+        if page_url == seed.url:
+            return PdfPageExtract(
+                urls=["/mid"],
+                document_title="Only One Hop",
+            )
+        if page_url == mid:
+            return PdfPageExtract(urls=["/file.pdf"])
+        return PdfPageExtract()
+
+    stage = PdfCrawlStage(
+        fetch_fn=fetch,
+        extract_fn=extract,
+        config=pdf_crawl_dirs,
+    )
+    run_async(stage.run(seed, STAGE_PARAMS, []))
+    _refresh(document_store)
+    # depth=1: title valid for the mid page hop, expired before the PDF child.
+    assert document_store[pdf_url].title is None

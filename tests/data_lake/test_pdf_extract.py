@@ -23,6 +23,7 @@ from fao_impact_monitor.data_lake.stages.pdf_extract_stage import (
     PDF_EXTRACT_STAGE_NAME,
     PdfExtractStage,
     PdfExtractStageResult,
+    _extract_title,
 )
 
 T = TypeVar("T")
@@ -188,3 +189,112 @@ async def _unused_submit(
 ) -> PdfExtractStageResult:
     del pdf_path, out_dir, version_id, fallback_title
     raise AssertionError("submit_fn should not be called")
+
+
+def test_extract_title_prefers_top_level_heading_even_if_shorter() -> None:
+    from docling_core.types.doc.labels import DocItemLabel
+
+    class _Item:
+        def __init__(
+            self,
+            label: Any,
+            text: str,
+            *,
+            level: int | None = None,
+        ) -> None:
+            self.label = label
+            self.text = text
+            self.level = level
+
+    class _Doc:
+        def __init__(self, items: list[_Item]) -> None:
+            self._items = items
+
+        def iterate_items(self) -> Any:
+            for item in self._items:
+                yield item, 1
+
+    doc = _Doc(
+        [
+            _Item(DocItemLabel.TITLE, "Short top title"),
+            _Item(
+                DocItemLabel.SECTION_HEADER,
+                "Much longer section header that should lose",
+                level=1,
+            ),
+        ]
+    )
+    assert _extract_title(doc, fallback="fallback") == "Short top title"
+
+    section_only = _Doc(
+        [
+            _Item(DocItemLabel.SECTION_HEADER, "Short ##", level=1),
+            _Item(
+                DocItemLabel.SECTION_HEADER,
+                "A longer deeper heading",
+                level=2,
+            ),
+        ]
+    )
+    assert _extract_title(section_only, fallback=None) == "Short ##"
+
+    same_level = _Doc(
+        [
+            _Item(DocItemLabel.SECTION_HEADER, "Short", level=1),
+            _Item(DocItemLabel.SECTION_HEADER, "Longer same level", level=1),
+        ]
+    )
+    assert _extract_title(same_level, fallback=None) == "Longer same level"
+
+
+def test_extract_keeps_agent_title_over_docling(
+    document_store: dict[str, Document],
+    pdf_extract_dirs: PdfExtractConfig,
+    run_async: RunAsync[Any],
+    tmp_path: Path,
+) -> None:
+    del document_store
+    pdf_file = tmp_path / "doc.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4\nfake")
+    agent_title = "Agent Discovered Title"
+
+    doc = PdfDocument(
+        url="https://example.com/report.pdf",
+        title=agent_title,
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
+    run_async(doc.insert())
+    assert doc.id is not None
+    doc.stage_results[PDF_CRAWL_STAGE_NAME] = [
+        PdfCrawlStageResult(
+            version_id="crawl-v1",
+            status=Status.COMPLETED,
+            content_path=str(pdf_file),
+        )
+    ]
+
+    async def submit(
+        *,
+        pdf_path: Path,
+        out_dir: Path,
+        version_id: str,
+        fallback_title: str | None,
+    ) -> PdfExtractStageResult:
+        assert fallback_title == agent_title
+        out_dir.mkdir(parents=True, exist_ok=True)
+        page1 = out_dir / "page_0001.md"
+        page1.write_text("# Docling Title\n\nPage one", encoding="utf-8")
+        return PdfExtractStageResult(
+            version_id=version_id,
+            status=Status.COMPLETED,
+            title="Docling Title",
+            num_pages=1,
+            page_paths=[str(page1)],
+        )
+
+    stage = PdfExtractStage(config=pdf_extract_dirs, submit_fn=submit)
+    result = run_async(stage.run(doc, {}, []))
+
+    assert result.status == Status.COMPLETED
+    assert result.title == agent_title
+    assert doc.title == agent_title

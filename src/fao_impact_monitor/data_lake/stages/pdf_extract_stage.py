@@ -197,27 +197,35 @@ def _process_job(
 def _extract_title(document: Any, fallback: str | None) -> str | None:
     """Pick the document title from page-1 layout labels.
 
-    Docling often marks cover chrome (org name, series) and the real title as
-    ``SECTION_HEADER`` / ``TITLE``. Prefer the longest ``TITLE``, else the
-    longest ``SECTION_HEADER`` — the true title is usually the longest line.
+    Prefer top-level headings the way markdown ranks them: ``TITLE`` (``#``)
+    over ``SECTION_HEADER`` level 1 (``##``) over deeper levels — even when a
+    deeper heading is longer. Within the best heading rank, prefer the longest
+    text (cover chrome is often short; the real title is usually longer).
     """
     from docling_core.types.doc.labels import DocItemLabel
 
-    titles: list[str] = []
-    section_headers: list[str] = []
+    # rank 0 = TITLE (#); section headers use their Docling level (1, 2, ...).
+    best_rank: int | None = None
+    best_texts: list[str] = []
     for item, _level in document.iterate_items():
         label = getattr(item, "label", None)
         text = " ".join((getattr(item, "text", None) or "").split())
         if not text:
             continue
         if label == DocItemLabel.TITLE:
-            titles.append(text)
+            rank = 0
         elif label == DocItemLabel.SECTION_HEADER:
-            section_headers.append(text)
-    if titles:
-        return max(titles, key=len)
-    if section_headers:
-        return max(section_headers, key=len)
+            level = getattr(item, "level", None)
+            rank = level if isinstance(level, int) and level >= 1 else 1
+        else:
+            continue
+        if best_rank is None or rank < best_rank:
+            best_rank = rank
+            best_texts = [text]
+        elif rank == best_rank:
+            best_texts.append(text)
+    if best_texts:
+        return max(best_texts, key=len)
     return fallback
 
 
@@ -321,7 +329,11 @@ class PdfExtractStage(Stage):
             )
 
         if result.status == Status.COMPLETED:
-            if result.title:
+            # Prefer a crawl-agent title already set on the PDF; use Docling
+            # only when none was discovered (or it expired before this PDF).
+            if document.title:
+                result = result.model_copy(update={"title": document.title})
+            elif result.title:
                 document.title = result.title
             if isinstance(document, PdfDocument):
                 document.page_paths = list(result.page_paths)

@@ -10,6 +10,7 @@ from urllib.request import urlopen
 
 import pytest
 
+from fao_impact_monitor.agent.pdf_crawl_agent import PdfPageExtract
 from fao_impact_monitor.config import PdfCrawlConfig
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.document import (
@@ -368,14 +369,16 @@ def test_get_data_integration_local_crawl(
         max_urls: int,
         max_retries: int,
         model: Any,
-    ) -> list[str]:
+    ) -> PdfPageExtract:
         del page_body, max_urls, max_retries, model
         path = page_url[len(http_server.base_url) :] or "/"
         if path == "/":
-            return [http_server.url("/report.pdf"), http_server.url("/page")]
+            return PdfPageExtract(
+                urls=[http_server.url("/report.pdf"), http_server.url("/page")]
+            )
         if path == "/page":
-            return [http_server.url("/annex.pdf")]
-        return []
+            return PdfPageExtract(urls=[http_server.url("/annex.pdf")])
+        return PdfPageExtract()
 
     stage = PdfCrawlStage(
         fetch_fn=fetch,
