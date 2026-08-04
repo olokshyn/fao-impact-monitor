@@ -78,6 +78,23 @@ class QueryGeneratorConfig(BaseSettings):
     max_queries: int = 5
 
 
+class ResearcherConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="RESEARCHER_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-terra"
+    verifier_llm_model: str = "openai:openai.gpt-5.6-luna"
+    max_research_iterations: int = 3
+    max_queries_per_iteration: int = 5
+    vector_results_per_query: int = 8
+    max_web_queries_per_iteration: int = 2
+    max_claim_extraction_retries: int = 2
+    max_answer_verification_retries: int = 2
+    max_agent_retries: int = 3
+
+
 class TellusConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TELLUS_",
@@ -144,6 +161,7 @@ class Config(BaseSettings):
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)
+    researcher: ResearcherConfig = Field(default_factory=ResearcherConfig)
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)

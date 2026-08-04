@@ -54,6 +54,14 @@ _DOWNLOAD_URL_RE = re.compile(
     r"(?:/download(?:\?|$))|(?:/bitstreams/)|(?:\.pdf(?:\?|$))",
     re.IGNORECASE,
 )
+# Frontend /bitstreams/<uuid>/download|content routes are SPA shells; the PDF
+# bytes are served from the DSpace REST API under /server/api/core/bitstreams/.
+_FAO_BITSTREAM_UUID_RE = re.compile(
+    r"https?://(?:www\.)?openknowledge\.fao\.org/bitstreams/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12})/(?:download|content)(?:\?|#|$)",
+    re.IGNORECASE,
+)
 
 _FETCH_FINAL_URL_JS = """
 async (url) => {
@@ -118,6 +126,17 @@ def _url_looks_like_binary_download(url: str) -> bool:
     return bool(_DOWNLOAD_URL_RE.search(url))
 
 
+def _fao_bitstream_api_content_url(url: str) -> str | None:
+    """Map FAO Knowledge Repository bitstream viewer URLs to the REST content URL."""
+    match = _FAO_BITSTREAM_UUID_RE.match(url.strip())
+    if match is None:
+        return None
+    return (
+        "https://openknowledge.fao.org/server/api/core/bitstreams/"
+        f"{match.group(1)}/content"
+    )
+
+
 def looks_like_chrome_pdf_viewer_shell(body: bytes) -> bool:
     """True for Chrome's built-in PDF viewer HTML (empty body + embedder CSS)."""
     if not body or body.startswith(PDF_MAGIC_BYTES) or not _looks_like_html(body):
@@ -147,6 +166,8 @@ def _is_acceptable_raw_capture(body: bytes) -> bool:
     if body.startswith(PDF_MAGIC_BYTES):
         return True
     if looks_like_chrome_pdf_viewer_shell(body):
+        return False
+    if looks_like_spa_shell(body):
         return False
     # FAO bitstream API URLs under /bitstreams/ often return JSON metadata.
     head = body.lstrip()[:1]
@@ -277,7 +298,8 @@ def _response_may_be_pdf(response: Any) -> bool:
     return (
         resp_url.endswith(".pdf")
         or ".pdf?" in resp_url
-        # FAO serves the file at .../bitstreams/<uuid>/content
+        # FAO serves PDF bytes at .../server/api/core/bitstreams/<uuid>/content
+        # (and sometimes .../bitstreams/<uuid>/content).
         or ("/bitstreams/" in resp_url and resp_url.rstrip("/").endswith("/content"))
     )
 
@@ -302,7 +324,27 @@ async def _request_bytes(page: Any, url: str) -> bytes | None:
     return _as_bytes(body)
 
 
-async def _capture_final_body(page: Any) -> bytes:
+async def _try_request_urls(page: Any, urls: list[str]) -> bytes | None:
+    """Return the first acceptable body from ``urls`` via Playwright request/fetch."""
+    seen: set[str] = set()
+    for url in urls:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        body = await _request_bytes(page, url)
+        if body is not None and _is_acceptable_raw_capture(body):
+            return body
+        try:
+            payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
+            body = base64.b64decode(payload)
+        except _BROWSER_ERRORS:
+            continue
+        if _is_acceptable_raw_capture(body):
+            return body
+    return None
+
+
+async def _capture_final_body(page: Any, *, navigate_url: str | None = None) -> bytes:
     """Fetch raw bytes for the final URL after SPA redirects settle.
 
     Prefer Playwright's ``request`` API so ``application/pdf`` responses are not
@@ -317,12 +359,14 @@ async def _capture_final_body(page: Any) -> bytes:
     for _ in range(3):
         try:
             url = await _wait_for_settled_url(page, settle_ms=250)
-            body = await _request_bytes(page, url)
-            if body is not None and _is_acceptable_raw_capture(body):
-                return body
-            payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
-            body = base64.b64decode(payload)
-            if _is_acceptable_raw_capture(body):
+            candidates = [url]
+            for candidate in (navigate_url, url):
+                if candidate:
+                    api_url = _fao_bitstream_api_content_url(candidate)
+                    if api_url is not None:
+                        candidates.append(api_url)
+            body = await _try_request_urls(page, candidates)
+            if body is not None:
                 return body
             wait_for_timeout = getattr(page, "wait_for_timeout", None)
             if wait_for_timeout is not None:
@@ -335,16 +379,21 @@ async def _capture_final_body(page: Any) -> bytes:
     if last_error is not None:
         raise last_error
     url = str(page.url)
-    body = await _request_bytes(page, url)
-    if body is not None and _is_acceptable_raw_capture(body):
-        return body
-    payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
-    body = base64.b64decode(payload)
-    if _is_acceptable_raw_capture(body):
-        return body
+    candidates = [url]
+    for candidate in (navigate_url, url):
+        if candidate:
+            api_url = _fao_bitstream_api_content_url(candidate)
+            if api_url is not None:
+                candidates.append(api_url)
+    body = await _try_request_urls(page, candidates)
     if body is not None:
         return body
-    raise RuntimeError(f"Failed to capture acceptable raw body for {url}")
+    # Last resort: return whatever the final URL yields (may still be a shell).
+    body = await _request_bytes(page, url)
+    if body is not None:
+        return body
+    payload = await page.evaluate(_FETCH_FINAL_URL_JS, url)
+    return base64.b64decode(payload)
 
 
 async def _capture_rendered_html(page: Any) -> bytes:
@@ -438,12 +487,28 @@ async def browser_fetch(
         on("response", on_response)
 
     async def page_action(page: Any) -> Any:
-        if network_tasks:
-            await asyncio.gather(*network_tasks, return_exceptions=True)
-            network_tasks.clear()
+        async def _drain_network_tasks() -> None:
+            if network_tasks:
+                await asyncio.gather(*network_tasks, return_exceptions=True)
+                network_tasks.clear()
+
+        await _drain_network_tasks()
         if body_mode == "rendered":
             captured["body"] = await _capture_rendered_html(page)
         else:
+            # SPA download pages may request PDF bytes after JS boots; wait briefly.
+            if _url_looks_like_binary_download(url):
+                wait_for_timeout = getattr(page, "wait_for_timeout", None)
+                for _ in range(20):
+                    network_body = captured.get("network_body")
+                    if network_body is not None and network_body.startswith(
+                        PDF_MAGIC_BYTES
+                    ):
+                        break
+                    await _drain_network_tasks()
+                    if wait_for_timeout is None:
+                        break
+                    await wait_for_timeout(250)
             network_body = captured.get("network_body")
             if network_body is not None and network_body.startswith(PDF_MAGIC_BYTES):
                 logger.debug(
@@ -453,7 +518,7 @@ async def browser_fetch(
                 )
                 captured["body"] = network_body
             else:
-                captured["body"] = await _capture_final_body(page)
+                captured["body"] = await _capture_final_body(page, navigate_url=url)
         return page
 
     async def _fetch(*, with_cloudflare: bool) -> bytes:
@@ -530,6 +595,38 @@ async def reliable_fetch(
     for ``browser_fetch``.
     """
     logger.info("Reliable fetch %s (HTTP then browser fallback)", url)
+    api_content_url = _fao_bitstream_api_content_url(url)
+    if api_content_url is not None:
+        try:
+            api_body = await fetch(
+                url=api_content_url,
+                stealthy_headers=stealthy_headers,
+                follow_redirects=follow_redirects,
+                timeout=timeout,
+                retries=fetch_retries,
+                retry_delay=retry_delay,
+            )
+        except CurlError as exc:
+            logger.warning(
+                "FAO bitstream API fetch failed for %s (%s); trying viewer URL",
+                api_content_url,
+                exc,
+            )
+        else:
+            if api_body.startswith(PDF_MAGIC_BYTES):
+                logger.info(
+                    "FAO bitstream API returned PDF for %s (%s bytes)",
+                    api_content_url,
+                    len(api_body),
+                )
+                return api_body
+            logger.info(
+                "FAO bitstream API did not return PDF for %s (%s bytes); "
+                "trying viewer URL",
+                api_content_url,
+                len(api_body),
+            )
+
     try:
         body = await fetch(
             url=url,

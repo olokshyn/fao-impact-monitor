@@ -16,6 +16,7 @@ dependencies = [
     "langchain-aws>=1.6.4",
     "langchain-openai>=1.4.1",
     "langgraph>=1.2.10",
+    "litellm>=1.30,<1.80",
     "numpy>=2.5.1",
     "openai>=2.52.0",
     "pandas>=3.0.5",
@@ -25,6 +26,7 @@ dependencies = [
     "scrapling[fetchers]>=0.4.12",
     "typer>=0.26.8",
     "wbgapi>=1.0.14",
+    "web-scout-ai>=1.3.9",
 ]
 
 [project.scripts]
@@ -140,4 +142,12 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "pypdfium2.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "web_scout"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "web_scout.*"
 ignore_missing_imports = true

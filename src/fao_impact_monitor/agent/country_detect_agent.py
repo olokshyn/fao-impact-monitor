@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 import pycountry
 from langchain.chat_models import init_chat_model
@@ -79,13 +79,13 @@ class ValidationIssue(BaseModel):
     reasons: list[str]
 
 
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     text: str
-    mentions: list[CountryMention]
-    issues: list[ValidationIssue]
-    retries_left: int
-    countries_iso3: list[str]
-    detections: list[str]
+    mentions: list[CountryMention] = Field(default_factory=list)
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    retries_left: int = 0
+    countries_iso3: list[str] = Field(default_factory=list)
+    detections: list[str] = Field(default_factory=list)
 
 
 def build_chat_model(
@@ -206,7 +206,7 @@ def build_country_detect_agent(model: BaseChatModel) -> Any:
     structured = model.with_structured_output(CountryMentionList)
 
     async def detect(state: AgentState) -> dict[str, Any]:
-        prompt = _user_prompt(text=state["text"], issues=state["issues"])
+        prompt = _user_prompt(text=state.text, issues=state.issues)
         result = await structured.ainvoke(
             [
                 SystemMessage(content=SYSTEM_PROMPT),
@@ -219,7 +219,7 @@ def build_country_detect_agent(model: BaseChatModel) -> Any:
         return {"mentions": result.mentions, "issues": []}
 
     async def validate(state: AgentState) -> dict[str, Any]:
-        valid, issues = validate_mentions(state["mentions"], state["text"])
+        valid, issues = validate_mentions(state.mentions, state.text)
         if issues:
             logger.warning(
                 "Country agent produced %s invalid mention(s)",
@@ -228,13 +228,13 @@ def build_country_detect_agent(model: BaseChatModel) -> Any:
             return {
                 "mentions": valid,
                 "issues": issues,
-                "retries_left": state["retries_left"] - 1,
+                "retries_left": state.retries_left - 1,
             }
         return {"mentions": valid, "issues": []}
 
     async def map_to_iso3(state: AgentState) -> dict[str, Any]:
         # Drop any still-invalid mentions after retries are exhausted.
-        valid, _issues = validate_mentions(state["mentions"], state["text"])
+        valid, _issues = validate_mentions(state.mentions, state.text)
         iso3s, detections = mentions_to_iso3(valid)
         return {
             "mentions": valid,
@@ -246,7 +246,7 @@ def build_country_detect_agent(model: BaseChatModel) -> Any:
     def route_after_validate(
         state: AgentState,
     ) -> Literal["detect", "map_to_iso3"]:
-        if state["issues"] and state["retries_left"] > 0:
+        if state.issues and state.retries_left > 0:
             return "detect"
         return "map_to_iso3"
 
@@ -277,14 +277,16 @@ async def detect_countries(
 
     chat_model = model or build_chat_model()
     agent = build_country_detect_agent(chat_model)
-    final_state: AgentState = await agent.ainvoke(
-        {
-            "text": text,
-            "mentions": [],
-            "issues": [],
-            "retries_left": max_retries,
-            "countries_iso3": [],
-            "detections": [],
-        }
+    final_state = AgentState.model_validate(
+        await agent.ainvoke(
+            {
+                "text": text,
+                "mentions": [],
+                "issues": [],
+                "retries_left": max_retries,
+                "countries_iso3": [],
+                "detections": [],
+            }
+        )
     )
-    return final_state.get("countries_iso3", []), final_state.get("detections", [])
+    return final_state.countries_iso3, final_state.detections

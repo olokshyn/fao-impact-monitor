@@ -8,6 +8,7 @@ from curl_cffi.curl import CurlError
 from fao_impact_monitor.data_lake.scrapling import (
     HTML_MAGIC_BYTES,
     PDF_MAGIC_BYTES,
+    _fao_bitstream_api_content_url,
     browser_fetch,
     ensure_chromium,
     fetch,
@@ -209,6 +210,23 @@ def test_looks_like_spa_shell_detects_fao_app_shell() -> None:
     assert not looks_like_spa_shell(content_html)
 
 
+def test_fao_bitstream_api_content_url() -> None:
+    assert (
+        _fao_bitstream_api_content_url(FAO_PDF_URL_2)
+        == "https://openknowledge.fao.org/server/api/core/bitstreams/"
+        "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+    )
+    assert (
+        _fao_bitstream_api_content_url(
+            "https://openknowledge.fao.org/bitstreams/"
+            "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+        )
+        == "https://openknowledge.fao.org/server/api/core/bitstreams/"
+        "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+    )
+    assert _fao_bitstream_api_content_url("https://example.com/doc.pdf") is None
+
+
 def test_looks_like_useless_http_body() -> None:
     assert looks_like_useless_http_body(b"")
     assert looks_like_useless_http_body(b"<html></html>")
@@ -241,6 +259,8 @@ def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
     )
 
     assert body.startswith(PDF_MAGIC_BYTES)
+    # API content URL is tried first; viewer URL still falls back to browser.
+    assert fetch_mock.await_count == 2
     browser_mock.assert_awaited_once_with(
         url=FAO_PDF_URL_2,
         headless=True,
@@ -251,6 +271,43 @@ def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
         retries=2,
         body_mode="raw",
     )
+
+
+def test_reliable_fetch_uses_fao_bitstream_api_content_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_bytes = b"%PDF-1.7 from-api"
+    fetch_mock = AsyncMock(return_value=pdf_bytes)
+    browser_mock = AsyncMock(return_value=b"unused")
+    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        browser_mock,
+    )
+
+    body = asyncio.run(
+        reliable_fetch(
+            url=FAO_PDF_URL_2,
+            timeout=15,
+            fetch_retries=1,
+            solve_cloudflare=False,
+            browser_retries=2,
+        )
+    )
+
+    assert body == pdf_bytes
+    fetch_mock.assert_awaited_once_with(
+        url=(
+            "https://openknowledge.fao.org/server/api/core/bitstreams/"
+            "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+        ),
+        stealthy_headers=True,
+        follow_redirects=True,
+        timeout=15,
+        retries=1,
+        retry_delay=2,
+    )
+    browser_mock.assert_not_awaited()
 
 
 def test_browser_fetch_rendered_returns_page_content(
@@ -442,6 +499,8 @@ def test_reliable_fetch_spa_shell_on_download_url_uses_raw(
     )
 
     assert body.startswith(PDF_MAGIC_BYTES)
+    # API content URL + viewer URL both return the SPA shell mock.
+    assert fetch_mock.await_count == 2
     browser_mock.assert_awaited_once_with(
         url=FAO_PDF_URL_2,
         headless=True,

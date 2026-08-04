@@ -1,7 +1,7 @@
 """LangGraph agent that extracts crawl candidate URLs and document titles."""
 
 import logging
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -95,15 +95,15 @@ class PdfPageExtract(BaseModel):
     document_title: str | None = None
 
 
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     page_url: str
     page_body: str
     max_urls: int
-    missing_urls: list[str]
-    missing_title: str | None
-    retries_left: int
-    urls: list[str]
-    document_title: str | None
+    missing_urls: list[str] = Field(default_factory=list)
+    missing_title: str | None = None
+    retries_left: int = 0
+    urls: list[str] = Field(default_factory=list)
+    document_title: str | None = None
 
 
 def build_chat_model(
@@ -220,11 +220,11 @@ def build_link_agent(model: BaseChatModel) -> Any:
 
     async def extract(state: AgentState) -> dict[str, Any]:
         prompt = _user_prompt(
-            page_url=state["page_url"],
-            page_body=state["page_body"],
-            max_urls=state["max_urls"],
-            missing_urls=state["missing_urls"],
-            missing_title=state["missing_title"],
+            page_url=state.page_url,
+            page_body=state.page_body,
+            max_urls=state.max_urls,
+            missing_urls=state.missing_urls,
+            missing_title=state.missing_title,
         )
         result = await structured.ainvoke(
             [
@@ -234,10 +234,10 @@ def build_link_agent(model: BaseChatModel) -> Any:
         )
         if not isinstance(result, PdfLinkCandidateList):
             result = PdfLinkCandidateList.model_validate(result)
-        urls = [link.url for link in result.links[: state["max_urls"]]]
+        urls = [link.url for link in result.links[: state.max_urls]]
         document_title = _normalize_title(result.document_title)
-        _log_links_detected(state["page_url"], len(urls))
-        _log_title_detected(state["page_url"], document_title)
+        _log_links_detected(state.page_url, len(urls))
+        _log_title_detected(state.page_url, document_title)
         return {
             "urls": urls,
             "document_title": document_title,
@@ -246,24 +246,22 @@ def build_link_agent(model: BaseChatModel) -> Any:
         }
 
     async def validate(state: AgentState) -> dict[str, Any]:
-        missing_urls = _validate_urls_in_body(state["urls"], state["page_body"])
-        missing_title = _title_missing_from_body(
-            state["document_title"], state["page_body"]
-        )
+        missing_urls = _validate_urls_in_body(state.urls, state.page_body)
+        missing_title = _title_missing_from_body(state.document_title, state.page_body)
         if missing_urls or missing_title is not None:
             for missing_url in missing_urls:
-                _log_missing_url(state["page_url"], missing_url)
+                _log_missing_url(state.page_url, missing_url)
             if missing_title is not None:
-                _log_missing_title(state["page_url"], missing_title)
+                _log_missing_title(state.page_url, missing_title)
             return {
                 "missing_urls": missing_urls,
                 "missing_title": missing_title,
-                "retries_left": state["retries_left"] - 1,
+                "retries_left": state.retries_left - 1,
             }
-        valid = [url for url in state["urls"] if url in state["page_body"]]
+        valid = [url for url in state.urls if url in state.page_body]
         return {
-            "urls": valid[: state["max_urls"]],
-            "document_title": state["document_title"],
+            "urls": valid[: state.max_urls],
+            "document_title": state.document_title,
             "missing_urls": [],
             "missing_title": None,
         }
@@ -271,9 +269,9 @@ def build_link_agent(model: BaseChatModel) -> Any:
     def route_after_validate(
         state: AgentState,
     ) -> Literal["extract", "__end__"]:
-        if (state["missing_urls"] or state["missing_title"] is not None) and state[
-            "retries_left"
-        ] > 0:
+        if (state.missing_urls or state.missing_title is not None) and (
+            state.retries_left > 0
+        ):
             return "extract"
         return "__end__"
 
@@ -301,20 +299,22 @@ async def extract_page_urls(
     """Run the link agent; return validated URLs and optional document title."""
     chat_model = model or build_chat_model()
     agent = build_link_agent(chat_model)
-    final_state: AgentState = await agent.ainvoke(
-        {
-            "page_url": page_url,
-            "page_body": page_body,
-            "max_urls": max_urls,
-            "missing_urls": [],
-            "missing_title": None,
-            "retries_left": max_retries,
-            "urls": [],
-            "document_title": None,
-        }
+    final_state = AgentState.model_validate(
+        await agent.ainvoke(
+            {
+                "page_url": page_url,
+                "page_body": page_body,
+                "max_urls": max_urls,
+                "missing_urls": [],
+                "missing_title": None,
+                "retries_left": max_retries,
+                "urls": [],
+                "document_title": None,
+            }
+        )
     )
-    urls = final_state.get("urls", [])
-    document_title = _normalize_title(final_state.get("document_title"))
+    urls = list(final_state.urls)
+    document_title = _normalize_title(final_state.document_title)
     # Drop any still-invalid values after retries are exhausted.
     still_missing = _validate_urls_in_body(urls, page_body)
     for missing_url in still_missing:
