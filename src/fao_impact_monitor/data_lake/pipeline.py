@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Annotated, Any
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from fao_impact_monitor.data_lake.common import Status
 
@@ -32,6 +33,8 @@ from .stages.tellus_document_fetch_stage import (
     TellusDocumentFetchStageResult,
 )
 
+logger = logging.getLogger(__name__)
+
 PIPELINE_PDF_CRAWL = "pdf_crawl"
 PIPELINE_PDF_PROCESS = "pdf_process"
 PIPELINE_TELLUS_PROCESS = "tellus_process"
@@ -50,11 +53,35 @@ class Pipeline(BeanieDocument):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    _stage_ok: dict[str, int] = PrivateAttr(default_factory=dict)
+    _stage_error: dict[str, int] = PrivateAttr(default_factory=dict)
+
     def is_completed(self, document: Document) -> bool:
         for step in self.steps:
             if self._get_stage_result(document, step) is None:
                 return False
         return True
+
+    def _record_stage_outcome(self, stage_name: str, status: Status) -> None:
+        if status == Status.COMPLETED:
+            self._stage_ok[stage_name] = self._stage_ok.get(stage_name, 0) + 1
+        else:
+            self._stage_error[stage_name] = self._stage_error.get(stage_name, 0) + 1
+
+    def stage_stats_summary(self) -> str:
+        parts: list[str] = []
+        for step in self.steps:
+            name = step.stage_name
+            ok = self._stage_ok.get(name, 0)
+            err = self._stage_error.get(name, 0)
+            if ok or err:
+                parts.append(f"{name}: ok={ok} errors={err}")
+        return "; ".join(parts) if parts else "no stages run"
+
+    def log_stage_stats(self) -> None:
+        logger.info(
+            "pipeline %s stage stats: %s", self.name, self.stage_stats_summary()
+        )
 
     async def run(self, document: Document) -> None:
         # TODO: re-run stage if the upstream or the current stage version has changed
@@ -62,8 +89,14 @@ class Pipeline(BeanieDocument):
         if existing is not None:
             document = existing
             if document.is_pipeline_completed(self.name):
+                logger.info(
+                    "pipeline %s: skip %s (already completed)",
+                    self.name,
+                    document.url,
+                )
                 return
 
+        logger.info("pipeline %s: start %s", self.name, document.url)
         if self.name not in document.pipeline_statuses:
             document.set_pipeline_status(self.name, Status.PENDING)
         document.set_pipeline_status(self.name, Status.RUNNING)
@@ -75,7 +108,19 @@ class Pipeline(BeanieDocument):
         try:
             for step in self.steps:
                 if self._get_stage_result(document, step) is not None:
+                    logger.info(
+                        "pipeline %s: skip stage %s for %s (already completed)",
+                        self.name,
+                        step.stage_name,
+                        document.url,
+                    )
                     continue
+                logger.info(
+                    "pipeline %s: running stage %s for %s",
+                    self.name,
+                    step.stage_name,
+                    document.url,
+                )
                 stage = get_stage(step.stage_name)
                 prev_results = self._get_prev_results(document, step)
                 result = await stage.run(document, step.params, prev_results)
@@ -92,6 +137,18 @@ class Pipeline(BeanieDocument):
                     document.set_pipeline_status(self.name, Status.RUNNING)
                 await document.save()
 
+                self._record_stage_outcome(step.stage_name, result.status)
+                logger.info(
+                    "pipeline %s: stage %s finished for %s status=%s; "
+                    "stage totals ok=%s errors=%s",
+                    self.name,
+                    step.stage_name,
+                    document.url,
+                    result.status,
+                    self._stage_ok.get(step.stage_name, 0),
+                    self._stage_error.get(step.stage_name, 0),
+                )
+
             # Reload so cascade sees relations/status written by stages (e.g. DFS).
             refreshed = await _find_document_by_url(document.url)
             if refreshed is not None:
@@ -104,13 +161,26 @@ class Pipeline(BeanieDocument):
             else:
                 document.set_pipeline_status(self.name, Status.FAILED)
             await document.save()
+            logger.info(
+                "pipeline %s: finished %s status=%s",
+                self.name,
+                document.url,
+                document.pipeline_status(self.name),
+            )
         except Exception:
             document.set_pipeline_status(self.name, Status.FAILED)
             if document.id is not None:
                 await document.save()
+            logger.exception(
+                "pipeline %s: failed for %s",
+                self.name,
+                document.url,
+            )
             raise
 
     async def _cascade_children(self, document: Document) -> None:
+        pipelines: dict[str, Pipeline] = {}
+        cascaded = 0
         for rel in document.relations:
             if rel.side != RelationSide.TO:
                 continue
@@ -120,8 +190,20 @@ class Pipeline(BeanieDocument):
             for pipeline_name, status in list(child.pipeline_statuses.items()):
                 if status == Status.COMPLETED:
                     continue
-                child_pipeline = get_pipeline(pipeline_name)
+                child_pipeline = pipelines.setdefault(
+                    pipeline_name, get_pipeline(pipeline_name)
+                )
                 await child_pipeline.run(child)
+                cascaded += 1
+        if cascaded:
+            logger.info(
+                "pipeline %s: cascaded %s child run(s) from %s",
+                self.name,
+                cascaded,
+                document.url,
+            )
+        for child_pipeline in pipelines.values():
+            child_pipeline.log_stage_stats()
 
     def _get_stage_result(
         self, document: Document, step: PipelineStep

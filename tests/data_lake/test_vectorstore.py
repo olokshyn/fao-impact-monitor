@@ -15,6 +15,7 @@ from fao_impact_monitor.data_lake.vectorstore import (
     build_bm25_pipeline,
     build_hybrid_pipeline,
     build_vector_pipeline,
+    ensure_indexes,
     text_search_index_definition,
     vector_search_index_definition,
 )
@@ -25,7 +26,7 @@ RunAsync = Callable[[Coroutine[Any, Any, T]], T]
 
 def _cfg() -> VectorStoreConfig:
     return VectorStoreConfig(
-        embedding_model="text-embedding-3-large",
+        embedding_model="amazon.titan-embed-text-v2:0",
         embedding_dimensions=8,
         vector_index_name="vec_idx",
         text_index_name="text_idx",
@@ -61,6 +62,75 @@ def test_default_embedding_dimensions() -> None:
     assert (
         definition["definition"]["fields"][0]["numDimensions"]
         == DEFAULT_EMBEDDING_DIMENSIONS
+    )
+
+
+def test_ensure_indexes_recreates_mismatched_vector_index(
+    run_async: RunAsync[Any],
+) -> None:
+    cfg = _cfg()
+    desired = vector_search_index_definition(cfg)
+    stale = {
+        "name": cfg.vector_index_name,
+        "type": "vectorSearch",
+        "latestDefinition": {
+            "fields": [
+                {
+                    "type": "vector",
+                    "path": "embedding",
+                    "numDimensions": 3072,
+                    "similarity": "cosine",
+                }
+            ]
+        },
+    }
+    text_desired = text_search_index_definition(cfg)
+    existing = [
+        stale,
+        {"name": cfg.text_index_name, "latestDefinition": text_desired["definition"]},
+    ]
+
+    class _Cursor:
+        def __init__(self, docs: list[dict[str, Any]]) -> None:
+            self._docs = docs
+
+        def __aiter__(self) -> _Cursor:
+            self._iter = iter(self._docs)
+            return self
+
+        async def __anext__(self) -> dict[str, Any]:
+            try:
+                return next(self._iter)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    class _Collection:
+        def __init__(self) -> None:
+            self.dropped: list[str] = []
+            self.created: list[Any] = []
+
+        async def create_index(self, _key: str) -> str:
+            return "document_id_1"
+
+        async def list_search_indexes(self) -> _Cursor:
+            return _Cursor(existing)
+
+        async def drop_search_index(self, name: str) -> None:
+            self.dropped.append(name)
+
+        async def create_search_index(self, model: Any) -> str:
+            self.created.append(model)
+            name = model.document.get("name", "idx")
+            return str(name)
+
+    collection = _Collection()
+    run_async(ensure_indexes(collection, config=cfg))  # type: ignore[arg-type]
+    assert collection.dropped == [cfg.vector_index_name]
+    assert len(collection.created) == 1
+    assert collection.created[0].document["name"] == cfg.vector_index_name
+    assert (
+        collection.created[0].document["definition"]["fields"][0]["numDimensions"]
+        == desired["definition"]["fields"][0]["numDimensions"]
     )
 
 

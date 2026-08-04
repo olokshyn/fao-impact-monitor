@@ -53,7 +53,13 @@ async def tellus_search_chunks(
         ]
 
     url = f"{cfg.api_base.rstrip('/')}/api/v1/search"
-    logger.info("Searching Tellus for query %s with body %s", query, body)
+    logger.info(
+        "Tellus search: query=%r max_results=%s min_year=%s countries=%s",
+        query,
+        cfg.max_results,
+        cfg.min_year,
+        countries_iso3 or [],
+    )
 
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, json=body)
@@ -61,10 +67,14 @@ async def tellus_search_chunks(
         data = response.json()
         if not isinstance(data, dict):
             raise TypeError(f"Tellus search expected a JSON object, got {type(data)}")
+        chunks = data.get("chunks") or []
+        documents = data.get("documents") or []
+        n_chunks = len(chunks) if isinstance(chunks, list) else 0
+        n_docs = len(documents) if isinstance(documents, list) else 0
         logger.info(
-            "Tellus returned %s chunks and %s documents for query %s",
-            len(data.get("chunks", [])),
-            len(data.get("documents", [])),
+            "Tellus search returned %s chunk(s) and %s document(s) for query=%r",
+            n_chunks,
+            n_docs,
             query,
         )
         return data
@@ -79,6 +89,7 @@ async def tellus_get_all_document_chunks(
     cfg = config or get_config().tellus
     headers = {"Authorization": f"Bearer {_tellus_bearer_token(cfg)}"}
     url = f"{cfg.api_base.rstrip('/')}/api/v1/sources/document/{document_id}/chunks"
+    logger.info("Tellus fetch all chunks for document_id=%s", document_id)
 
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
@@ -88,4 +99,11 @@ async def tellus_get_all_document_chunks(
             raise TypeError(
                 f"Tellus document chunks expected a JSON object, got {type(data)}"
             )
+        chunks = data.get("chunks") or []
+        n_chunks = len(chunks) if isinstance(chunks, list) else 0
+        logger.info(
+            "Tellus document %s returned %s chunk(s)",
+            document_id,
+            n_chunks,
+        )
         return data

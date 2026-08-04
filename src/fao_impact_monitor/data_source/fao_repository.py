@@ -54,10 +54,21 @@ class FaoRepository(DataSource):
         )
         seed_urls = _expand_repository_urls(config.url, config.searches)
         pipeline = get_pipeline(PIPELINE_PDF_CRAWL)
+        logger.info(
+            "FaoRepository: crawling %s seed URL(s) via %s",
+            len(seed_urls),
+            PIPELINE_PDF_CRAWL,
+        )
 
         seen_ids: set[PydanticObjectId] = set()
         results: list[DataResult] = []
-        for seed_url in seed_urls:
+        for index, seed_url in enumerate(seed_urls, start=1):
+            logger.info(
+                "FaoRepository: [%s/%s] seed %s",
+                index,
+                len(seed_urls),
+                seed_url,
+            )
             seed = WebPageDocument(
                 url=seed_url,
                 source=self.source,
@@ -73,6 +84,12 @@ class FaoRepository(DataSource):
                     continue
                 seen_ids.add(pdf.id)
                 results.append(_to_data_result(pdf))
+
+        pipeline.log_stage_stats()
+        logger.info(
+            "FaoRepository: done — returned %s PDF DataResult(s)",
+            len(results),
+        )
         return results
 
 

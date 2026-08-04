@@ -51,16 +51,40 @@ class TellusDataSource(DataSource):
         del data_source_config, year_start, year_end
         country = iso3_to_country_name(country_iso3)
         query = f"{country}: {metric.description}"
+        logger.info(
+            "TellusDataSource: country=%s (%s) metric=%r query=%r",
+            country_iso3,
+            country,
+            metric.name,
+            query,
+        )
         response = await tellus_search_chunks(query)
         chunks = response.get("chunks") or []
         if not isinstance(chunks, list):
             raise TypeError(f"Tellus search chunks must be a list, got {type(chunks)}")
         chunk_dicts = [c for c in chunks if isinstance(c, dict)]
         matched_by_doc = _group_matched_pages(chunk_dicts)
+        logger.info(
+            "TellusDataSource: %s search chunk(s) → %s unique document(s) to process",
+            len(chunk_dicts),
+            len(matched_by_doc),
+        )
 
         results: list[DataResult] = []
         pipeline = get_pipeline(PIPELINE_TELLUS_PROCESS)
-        for document_id, new_pages in matched_by_doc.items():
+        total = len(matched_by_doc)
+        for index, (document_id, new_pages) in enumerate(
+            matched_by_doc.items(), start=1
+        ):
+            logger.info(
+                "TellusDataSource: [%s/%s] pipeline %s for document_id=%s "
+                "matched_pages=%s",
+                index,
+                total,
+                PIPELINE_TELLUS_PROCESS,
+                document_id,
+                new_pages,
+            )
             existing = await find_tellus_document_by_external_id(document_id)
             if existing is not None:
                 existing.matched_pages = sorted(
@@ -86,7 +110,22 @@ class TellusDataSource(DataSource):
                     "Tellus document %s missing after pipeline run", document_id
                 )
                 continue
+            status = refreshed.pipeline_status(PIPELINE_TELLUS_PROCESS)
+            logger.info(
+                "TellusDataSource: [%s/%s] document_id=%s pipeline_status=%s",
+                index,
+                total,
+                document_id,
+                status,
+            )
             results.append(_to_data_result(refreshed))
+
+        pipeline.log_stage_stats()
+        logger.info(
+            "TellusDataSource: done — returned %s DataResult(s) from %s document(s)",
+            len(results),
+            total,
+        )
         return results
 
 

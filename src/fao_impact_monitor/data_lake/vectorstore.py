@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
-from langchain_openai import OpenAIEmbeddings
+from langchain_aws import BedrockEmbeddings
 from pydantic import BaseModel, Field
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.operations import SearchIndexModel
@@ -19,8 +21,10 @@ from fao_impact_monitor.config import (
 )
 from fao_impact_monitor.data_lake.document import DocumentType
 
-# text-embedding-3-large default output size when dimensions is unset.
-DEFAULT_EMBEDDING_DIMENSIONS = 3072
+# Titan Text Embeddings V2 default output size when dimensions is unset.
+DEFAULT_EMBEDDING_DIMENSIONS = 1024
+
+logger = logging.getLogger(__name__)
 
 EmbedQueryFn = Callable[[str], Awaitable[list[float]]]
 AggregateFn = Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
@@ -67,20 +71,23 @@ def build_embeddings(
     *,
     vector_store_config: VectorStoreConfig | None = None,
     aws_bedrock_config: AwsBedrockConfig | None = None,
-) -> OpenAIEmbeddings:
-    """Build LangChain OpenAIEmbeddings pointed at AWS Bedrock Mantle."""
+) -> BedrockEmbeddings:
+    """Build LangChain BedrockEmbeddings for Titan (bedrock-runtime)."""
     config = get_config()
     vs = vector_store_config or config.vector_store
     aws = aws_bedrock_config or config.aws_bedrock
+    api_key = aws.api_key.get_secret_value()
+    if api_key:
+        # boto3 picks this up for InvokeModel bearer-token auth.
+        os.environ["AWS_BEARER_TOKEN_BEDROCK"] = api_key
     kwargs: dict[str, Any] = {
-        "model": vs.embedding_model,
-        "api_key": aws.api_key.get_secret_value(),
-        "base_url": aws.base_url,
-        "check_embedding_ctx_length": False,
+        "model_id": vs.embedding_model,
+        "region_name": aws.region,
+        "model_kwargs": {"normalize": True},
     }
     if vs.embedding_dimensions is not None:
         kwargs["dimensions"] = vs.embedding_dimensions
-    return OpenAIEmbeddings(**kwargs)
+    return BedrockEmbeddings(**kwargs)
 
 
 def vector_search_index_definition(
@@ -140,25 +147,54 @@ def text_search_index_definition(
     }
 
 
+def _existing_search_definition(existing: Mapping[str, Any]) -> Any:
+    return existing.get("latestDefinition", existing.get("definition"))
+
+
 async def ensure_indexes(
     collection: AsyncCollection[Any],
     *,
     config: VectorStoreConfig | None = None,
 ) -> None:
-    """Create vector + text search indexes if the server supports them."""
+    """Create vector + text search indexes, recreating on definition mismatch.
+
+    Atlas rejects ``create_search_index`` when a same-named index already exists
+    with a different definition (e.g. after changing embedding dimensions).
+    """
     cfg = config or get_config().vector_store
     await collection.create_index("document_id")
+
+    existing_by_name: dict[str, Mapping[str, Any]] = {}
+    async for doc in await collection.list_search_indexes():
+        name = doc.get("name")
+        if isinstance(name, str):
+            existing_by_name[name] = doc
+
     for index_spec in (
         vector_search_index_definition(cfg),
         text_search_index_definition(cfg),
     ):
+        name = index_spec["name"]
+        desired = index_spec["definition"]
+        existing = existing_by_name.get(name)
+        if existing is not None:
+            if _existing_search_definition(existing) == desired:
+                logger.info("Search index %s already up to date", name)
+                continue
+            logger.info(
+                "Search index %s definition changed; dropping and recreating",
+                name,
+            )
+            await collection.drop_search_index(name)
+
         await collection.create_search_index(
             SearchIndexModel(
-                definition=index_spec["definition"],
-                name=index_spec["name"],
+                definition=desired,
+                name=name,
                 type=index_spec["type"],
             )
         )
+        logger.info("Created search index %s (%s)", name, index_spec["type"])
 
 
 def _countries_filter(

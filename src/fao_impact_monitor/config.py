@@ -83,8 +83,8 @@ class VectorStoreConfig(BaseSettings):
         **_COMMON_SETTINGS,
     )
 
-    embedding_model: str = "text-embedding-3-large"
-    embedding_dimensions: int | None = None
+    embedding_model: str = "amazon.titan-embed-text-v2:0"
+    embedding_dimensions: int | None = 1024
     collection_name: str = "embeddings"
     vector_index_name: str = "embeddings_vector_index"
     text_index_name: str = "embeddings_text_index"
