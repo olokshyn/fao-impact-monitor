@@ -152,6 +152,69 @@ Two layers sit under `src/fao_impact_monitor/`:
 
 Example: `tellus_provider` searches and fetches Tellus chunks; `TellusDataSource` builds a metric/country query, starts the Tellus process pipeline on matching documents, and returns results suitable for metric computation.
 
+## Pipelines overview
+
+Use-case metrics call registered **data sources**. Some sources hit an API directly; others seed a **data lake pipeline** that discovers and processes documents in MongoDB. Each document tracks status **per pipeline** (`PENDING` → `RUNNING` → `COMPLETED` / `FAILED`). When a stage creates child documents, `Pipeline.run()` cascades into those children’s enrolled pipelines before returning.
+
+| Data source | Entry | What it does |
+| --- | --- | --- |
+| `WorldBank` | World Bank API | Indicator time series → `DataResult` (no data-lake pipeline) |
+| `FaoRepository` | `pdf_crawl` | Seed web page → DFS crawl → PDFs enrolled in `pdf_process` |
+| `Tellus` | `tellus_process` | Search Tellus → fetch matched pages → detect countries → embed |
+
+```mermaid
+flowchart TB
+  subgraph sources["Data sources"]
+    WB["WorldBank"]
+    FR["FaoRepository"]
+    TL["Tellus"]
+  end
+
+  WB --> WBAPI["World Bank API"]
+  WBAPI --> DR["DataResult"]
+
+  FR --> PC["pdf_crawl pipeline"]
+  subgraph pdf_crawl_pipe["pdf_crawl"]
+    PCS["pdf_crawl stage<br/>(DFS URL walk)"]
+  end
+  PC --> PCS
+  PCS -->|"web child"| PCS
+  PCS -->|"PDF child"| PP["pdf_process pipeline"]
+
+  subgraph pdf_process_pipe["pdf_process"]
+    PE["pdf_extract"]
+    CD1["country_detect"]
+    EC1["embed_chunks"]
+    PE --> CD1 --> EC1
+  end
+  PP --> PE
+
+  TL --> TS["Tellus search API"]
+  TS --> TP["tellus_process pipeline"]
+  subgraph tellus_process_pipe["tellus_process"]
+    TF["tellus_document_fetch"]
+    CD2["country_detect"]
+    EC2["embed_chunks"]
+    TF --> CD2 --> EC2
+  end
+  TP --> TF
+
+  EC1 --> VS[(MongoDB + vectorstore)]
+  EC2 --> VS
+  FR -.->|reachable PDFs| DR
+  TL -.->|processed docs| DR
+```
+
+**Stages (in order within each pipeline):**
+
+| Pipeline | Stages |
+| --- | --- |
+| `pdf_crawl` | `pdf_crawl` — DFS crawl from a `WebPageDocument` seed; enrolls linked pages back into `pdf_crawl` and discovered PDFs into `pdf_process` |
+| `pdf_process` | `pdf_extract` → `country_detect` → `embed_chunks` |
+| `tellus_process` | `tellus_document_fetch` → `country_detect` → `embed_chunks` |
+
+Document types: `WebPageDocument` (crawl seeds / intermediate pages), `PdfDocument` (`pdf_process`), `TellusDocument` (`tellus_process`). Shared stages (`country_detect`, `embed_chunks`) take a chunk iterator from the preceding extract/fetch stage.
+
 ## Adding a data source
 
 New metric-facing sources implement the `DataSource` interface in
