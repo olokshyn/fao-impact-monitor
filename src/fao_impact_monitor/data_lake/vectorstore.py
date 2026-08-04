@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
 from langchain_aws import BedrockEmbeddings
 from pydantic import BaseModel, Field
+from pymongo import ASCENDING, IndexModel
 from pymongo.asynchronous.collection import AsyncCollection
 from pymongo.operations import SearchIndexModel
 
@@ -34,7 +35,7 @@ class ChunkFields(BaseModel):
     """Fields shared by stored embeddings and search hits."""
 
     document_id: Annotated[PydanticObjectId, Indexed()]
-    document_url: str
+    document_url: Annotated[str, Indexed()]
     document_external_id: str | None = None
     document_title: str | None = None
     document_meta: dict[str, Any] = Field(default_factory=dict)
@@ -52,6 +53,11 @@ class ChunkEmbedding(BeanieDocument, ChunkFields):
 
     class Settings:
         name = "embeddings"
+        indexes: ClassVar[list[IndexModel]] = [
+            IndexModel(
+                [("document_url", ASCENDING), ("document_source", ASCENDING)],
+            ),
+        ]
 
 
 class ChunkHit(ChunkFields):
@@ -163,6 +169,10 @@ async def ensure_indexes(
     """
     cfg = config or get_config().vector_store
     await collection.create_index("document_id")
+    await collection.create_index("document_url")
+    await collection.create_index(
+        [("document_url", ASCENDING), ("document_source", ASCENDING)],
+    )
 
     existing_by_name: dict[str, Mapping[str, Any]] = {}
     async for doc in await collection.list_search_indexes():

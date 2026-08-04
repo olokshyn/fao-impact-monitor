@@ -1,9 +1,10 @@
 from enum import StrEnum, auto
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
 from pydantic import BaseModel, Field, computed_field, field_validator
+from pymongo import ASCENDING, IndexModel
 
 from fao_impact_monitor.data_lake.common import Status
 from fao_impact_monitor.data_lake.stage import StageResult, get_stage_result_class
@@ -34,7 +35,7 @@ class Relation(BaseModel):
 
 
 class Document(BeanieDocument):
-    url: Annotated[str, Indexed(unique=True)]
+    url: Annotated[str, Indexed()]
     external_id: Annotated[
         str | None,
         Indexed(
@@ -99,3 +100,9 @@ class Document(BeanieDocument):
         name = "Document"
         is_root = True
         class_id = "type"
+        indexes: ClassVar[list[IndexModel]] = [
+            IndexModel(
+                [("url", ASCENDING), ("source", ASCENDING)],
+                unique=True,
+            ),
+        ]

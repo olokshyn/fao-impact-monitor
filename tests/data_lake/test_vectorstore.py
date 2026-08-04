@@ -109,8 +109,8 @@ def test_ensure_indexes_recreates_mismatched_vector_index(
             self.dropped: list[str] = []
             self.created: list[Any] = []
 
-        async def create_index(self, _key: str) -> str:
-            return "document_id_1"
+        async def create_index(self, _key: Any, **_kwargs: Any) -> str:
+            return "ok"
 
         async def list_search_indexes(self) -> _Cursor:
             return _Cursor(existing)
