@@ -1,8 +1,7 @@
-"""BFS PDF crawl stage driven by a LangGraph link-extraction agent."""
+"""DFS PDF crawl stage driven by a LangGraph link-extraction agent."""
 
 import hashlib
 import logging
-from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -73,6 +72,7 @@ class PdfCrawlStageVersion(StageVersion):
     max_url_depth: int
     max_urls_per_page: int
     max_pdfs: int
+    max_urls: int | None = None
 
     class Settings:
         class_id_value = PDF_CRAWL_STAGE_NAME
@@ -98,7 +98,7 @@ class PdfCrawlStage(Stage):
         cfg = self._config or get_config().pdf_crawl
         payload = (
             f"{cfg.llm_model}|{cfg.max_url_depth}|{cfg.max_urls_per_page}|"
-            f"{cfg.max_pdfs}|{cfg.max_agent_retries}"
+            f"{cfg.max_pdfs}|{cfg.max_urls}|{cfg.max_agent_retries}"
         )
         version_id = hashlib.sha256(payload.encode()).hexdigest()[:32]
         existing = await PdfCrawlStageVersion.find_one(
@@ -112,6 +112,7 @@ class PdfCrawlStage(Stage):
             max_url_depth=cfg.max_url_depth,
             max_urls_per_page=cfg.max_urls_per_page,
             max_pdfs=cfg.max_pdfs,
+            max_urls=cfg.max_urls,
         )
         await version.insert()
         return version
@@ -225,21 +226,31 @@ class PdfCrawlStage(Stage):
         _append_stage_result(seed_doc, seed_result)
         await seed_doc.save()
 
+        urls_processed = 1  # seed
+        if cfg.max_urls is not None and urls_processed >= cfg.max_urls:
+            logger.info(
+                "Stopping after seed: reached max_urls=%s",
+                cfg.max_urls,
+            )
+            await seed_doc.save()
+            return seed_result
+
         page_text = _decode_html(body)
         child_urls = await self._extract_urls(
             page_url=seed_doc.url,
             page_body=page_text,
             cfg=cfg,
         )
-        await self._bfs(
+        await self._dfs(
             seed_doc=seed_doc,
             initial_urls=child_urls,
             cfg=cfg,
             version_id=version_id,
             pipeline_for_web=pipeline_for_web,
             pipeline_for_pdf=pipeline_for_pdf,
+            urls_processed=urls_processed,
         )
-        # Refresh seed after BFS may have updated relations.
+        # Refresh seed after DFS may have updated relations.
         await seed_doc.save()
         return seed_result
 
@@ -270,7 +281,7 @@ class PdfCrawlStage(Stage):
             model=self._chat_model,
         )
 
-    async def _bfs(
+    async def _dfs(
         self,
         *,
         seed_doc: WebPageDocument,
@@ -279,12 +290,14 @@ class PdfCrawlStage(Stage):
         version_id: str,
         pipeline_for_web: str,
         pipeline_for_pdf: str,
+        urls_processed: int,
     ) -> None:
-        # Queue stores (url, depth). Each URL is scheduled at most once via
+        # Stack stores (url, depth). DFS reaches PDF leaves before exhausting
+        # sibling web pages (unlike BFS). Each URL is scheduled at most once via
         # ``visited``. Additional parents that discover the same URL are recorded
         # in ``parents_by_url`` and linked when the URL finishes (or immediately
         # if it is already COMPLETED).
-        queue: deque[tuple[str, int]] = deque()
+        stack: list[tuple[str, int]] = []
         visited: set[str] = {seed_doc.url}
         parents_by_url: dict[str, list[Document]] = {}
         pdf_count = 0
@@ -307,17 +320,21 @@ class PdfCrawlStage(Stage):
                 return
             visited.add(absolute)
             parents_by_url.setdefault(absolute, []).append(parent)
-            queue.append((absolute, depth))
+            stack.append((absolute, depth))
 
-        for raw_url in initial_urls:
+        # Push in reverse so the first link is explored first (LIFO).
+        for raw_url in reversed(initial_urls):
             await schedule(raw_url=raw_url, parent=seed_doc, depth=1)
 
-        while queue:
+        while stack:
             if pdf_count >= cfg.max_pdfs:
-                logger.info("Stopping BFS: reached max_pdfs=%s", cfg.max_pdfs)
+                logger.info("Stopping DFS: reached max_pdfs=%s", cfg.max_pdfs)
+                break
+            if cfg.max_urls is not None and urls_processed >= cfg.max_urls:
+                logger.info("Stopping DFS: reached max_urls=%s", cfg.max_urls)
                 break
 
-            url, depth = queue.popleft()
+            url, depth = stack.pop()
             if depth > cfg.max_url_depth:
                 parents_by_url.pop(url, None)
                 continue
@@ -336,6 +353,7 @@ class PdfCrawlStage(Stage):
             except Exception:
                 logger.exception("Failed to fetch %s; skipping", url)
                 continue
+            urls_processed += 1
 
             kind = classify_content(body)
             if kind == "other":
@@ -414,7 +432,7 @@ class PdfCrawlStage(Stage):
                 page_body=page_text,
                 cfg=cfg,
             )
-            for raw_url in child_urls:
+            for raw_url in reversed(child_urls):
                 await schedule(raw_url=raw_url, parent=page_doc, depth=depth + 1)
 
 

@@ -92,7 +92,7 @@ class Pipeline(BeanieDocument):
                     document.set_pipeline_status(self.name, Status.RUNNING)
                 await document.save()
 
-            # Reload so cascade sees relations/status written by stages (e.g. BFS).
+            # Reload so cascade sees relations/status written by stages (e.g. DFS).
             refreshed = await _find_document_by_url(document.url)
             if refreshed is not None:
                 document = refreshed

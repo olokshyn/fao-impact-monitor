@@ -438,7 +438,7 @@ def test_completed_child_gets_relations_only(
     )
 
 
-def test_max_pdfs_stops_bfs(
+def test_max_pdfs_stops_dfs(
     document_store: dict[str, Document],
     pdf_crawl_dirs: PdfCrawlConfig,
     run_async: RunAsync[Any],
@@ -478,6 +478,54 @@ def test_max_pdfs_stops_bfs(
     _refresh(document_store)
     pdfs = [doc for doc in document_store.values() if doc.type == DocumentType.PDF]
     assert len(pdfs) == 1
+
+
+def test_max_urls_stops_dfs(
+    document_store: dict[str, Document],
+    pdf_crawl_dirs: PdfCrawlConfig,
+    run_async: RunAsync[Any],
+) -> None:
+    """max_urls counts the seed; with max_urls=2 only one child is fetched."""
+    pdf_crawl_dirs.max_urls = 2
+    seed = _seed("https://example.com/")
+    fetch_calls: list[str] = []
+
+    async def fetch(*, url: str) -> bytes:
+        fetch_calls.append(url)
+        if url == seed.url:
+            return (
+                b"<!doctype html><html><body>"
+                b'<a href="/page1">Page 1</a>'
+                b'<a href="/page2">Page 2</a>'
+                b"</body></html>"
+            )
+        return b"<!doctype html><html><body><p>leaf</p></body></html>"
+
+    async def extract(
+        *,
+        page_url: str,
+        page_body: str,
+        max_urls: int,
+        max_retries: int,
+        model: Any = None,
+    ) -> list[str]:
+        del page_body, max_urls, max_retries, model
+        if page_url == seed.url:
+            return ["/page1", "/page2"]
+        return []
+
+    stage = PdfCrawlStage(
+        fetch_fn=fetch,
+        extract_fn=extract,
+        config=pdf_crawl_dirs,
+    )
+    run_async(stage.run(seed, STAGE_PARAMS, []))
+    _refresh(document_store)
+    assert fetch_calls[0] == seed.url
+    assert len(fetch_calls) == 2
+    assert seed.url in document_store
+    children = [u for u in document_store if u != seed.url]
+    assert len(children) == 1
 
 
 def test_fetch_error_on_seed_fails(

@@ -320,6 +320,21 @@ A document tracks progress **per pipeline** via `Document.pipeline_statuses`
    `pdf_process`), that same `run()` cascades into those child pipelines and
    finishes them before returning.
 
+### `pdf_crawl` uses depth-first search
+
+`pdf_crawl` walks the discovered URL graph with **DFS**, not BFS. PDFs are
+usually leaves (seed → report page → PDF). BFS expands many sibling web pages
+before reaching those leaves, so interrupting a long crawl often yields zero
+PDFs. DFS follows one path to a leaf first, so early stop (`max_pdfs`,
+`max_urls`, manual interrupt, or a short interactive run) can still produce
+usable PDF documents.
+
+Depth is 0-based: the seed is depth 0; links from the seed are depth 1; and so
+on, up to `PdfCrawlConfig.max_url_depth`.
+
+Optional `PdfCrawlConfig.max_urls` (env `PDF_MAX_URLS`) caps how many URLs the
+stage will fetch, including the seed. `None` (default) means unlimited.
+
 ### Implement the stage
 
 1. Add a module under `src/fao_impact_monitor/data_lake/stages/`.

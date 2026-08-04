@@ -36,6 +36,7 @@ class PdfCrawlConfig(BaseSettings):
 
     max_url_depth: int = 10
     max_pdfs: int = 50
+    max_urls: int | None = None  # None = unlimited (includes the seed URL)
     max_pdf_size: int = 10 * 1024 * 1024  # 10MB
     save_dir: Path = DATA_DIR / "pdf"
     web_page_save_dir: Path = DATA_DIR / "web_page"
