@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock
@@ -28,12 +29,17 @@ _GENERATED_QUERIES = [
 ]
 
 
-def _metric() -> Metric:
+def _metric(
+    name: str = "Water stress",
+    description: str = "Water resources availability",
+    example: str = "Water stress increased.",
+    unit: str = "%",
+) -> Metric:
     return Metric(
-        name="Water stress",
-        description="Water resources availability",
-        example="Water stress increased.",
-        unit="%",
+        name=name,
+        description=description,
+        example=example,
+        unit=unit,
         data_sources=[DataSourceConfig(source="Tellus")],
     )
 
@@ -143,7 +149,7 @@ def test_get_data_searches_and_unions_matched_pages(
         )
     )
 
-    assert [q for q, _ in searched] == _GENERATED_QUERIES
+    assert sorted(q for q, _ in searched) == sorted(_GENERATED_QUERIES)
     assert all(countries == ["KEN"] for _, countries in searched)
 
     refreshed = run_async(_find_by_external_id("doc-1"))
@@ -159,8 +165,6 @@ def test_get_data_searches_and_unions_matched_pages(
 
 
 def test_get_data_runs_generated_queries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import asyncio
-
     searched: list[tuple[str, list[str] | None]] = []
 
     async def fake_generate_queries(**kwargs: Any) -> list[str]:
@@ -199,8 +203,182 @@ def test_get_data_runs_generated_queries(monkeypatch: pytest.MonkeyPatch) -> Non
         )
     )
     assert results == []
-    assert [q for q, _ in searched] == _GENERATED_QUERIES
+    assert sorted(q for q, _ in searched) == sorted(_GENERATED_QUERIES)
     assert all(countries == ["KEN"] for _, countries in searched)
+
+
+def test_get_data_for_metrics_merges_across_metrics(
+    document_store: dict[str, Document],
+    run_async: RunAsync[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del document_store
+    generated_for: list[str] = []
+
+    async def fake_generate_queries(**kwargs: Any) -> list[str]:
+        name = kwargs["research_question"]
+        generated_for.append(name)
+        if name == "Cropland":
+            return ["cropland drought query"]
+        if name == "Pastureland":
+            return ["pastureland flood query"]
+        return []
+
+    async def fake_search(
+        query: str,
+        countries_iso3: list[str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del countries_iso3, args, kwargs
+        if query == "cropland drought query":
+            return {
+                "chunks": [
+                    {"document_id": "shared-doc", "page_num": 3},
+                    {"document_id": "crop-only", "page_num": 1},
+                ],
+                "documents": [],
+            }
+        if query == "pastureland flood query":
+            return {
+                "chunks": [
+                    {"document_id": "shared-doc", "page_num": 7},
+                ],
+                "documents": [],
+            }
+        return {"chunks": [], "documents": []}
+
+    run_calls: list[str] = []
+
+    async def fake_run(document: TellusDocument) -> None:
+        assert document.external_id is not None
+        run_calls.append(document.external_id)
+        if document.id is None:
+            document.title = f"Title {document.external_id}"
+            document.metadata = {
+                "url": f"https://example.org/{document.external_id}",
+                "citation": f"cite-{document.external_id}",
+            }
+            document.set_pipeline_status(PIPELINE_TELLUS_PROCESS, Status.COMPLETED)
+            await document.insert()
+        else:
+            await document.save()
+
+    pipeline = MagicMock()
+    pipeline.run = AsyncMock(side_effect=fake_run)
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.generate_queries",
+        fake_generate_queries,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.tellus_search_chunks",
+        fake_search,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.get_pipeline",
+        lambda _name: pipeline,
+    )
+
+    source = TellusDataSource()
+    results = run_async(
+        source.get_data_for_metrics(
+            [
+                _metric(name="Cropland", description="Cropland affected"),
+                _metric(name="Pastureland", description="Pastureland affected"),
+            ],
+            "KEN",
+        )
+    )
+
+    assert sorted(generated_for) == ["Cropland", "Pastureland"]
+    assert set(run_calls) == {"shared-doc", "crop-only"}
+    assert len(results) == 2
+
+    shared = run_async(_find_by_external_id("shared-doc"))
+    assert shared is not None
+    assert shared.matched_pages == [3, 7]
+
+
+def test_search_and_pipeline_respect_max_requests(
+    document_store: dict[str, Document],
+    run_async: RunAsync[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del document_store
+    max_requests = 2
+    search_inflight = 0
+    search_peak = 0
+    pipeline_inflight = 0
+    pipeline_peak = 0
+
+    async def fake_generate_queries(**kwargs: Any) -> list[str]:
+        del kwargs
+        return [f"query-{i}" for i in range(5)]
+
+    async def fake_search(
+        query: str,
+        countries_iso3: list[str] | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del countries_iso3, args, kwargs
+        nonlocal search_inflight, search_peak
+        search_inflight += 1
+        search_peak = max(search_peak, search_inflight)
+        await asyncio.sleep(0.01)
+        search_inflight -= 1
+        return {
+            "chunks": [{"document_id": f"doc-{query}", "page_num": 1}],
+            "documents": [],
+        }
+
+    async def fake_run(document: TellusDocument) -> None:
+        nonlocal pipeline_inflight, pipeline_peak
+        pipeline_inflight += 1
+        pipeline_peak = max(pipeline_peak, pipeline_inflight)
+        await asyncio.sleep(0.01)
+        pipeline_inflight -= 1
+        assert document.external_id is not None
+        if document.id is None:
+            document.title = f"Title {document.external_id}"
+            document.metadata = {
+                "url": f"https://example.org/{document.external_id}",
+                "citation": f"cite-{document.external_id}",
+            }
+            document.set_pipeline_status(PIPELINE_TELLUS_PROCESS, Status.COMPLETED)
+            await document.insert()
+        else:
+            await document.save()
+
+    pipeline = MagicMock()
+    pipeline.run = AsyncMock(side_effect=fake_run)
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.generate_queries",
+        fake_generate_queries,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.tellus_search_chunks",
+        fake_search,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.data_source.tellus.get_pipeline",
+        lambda _name: pipeline,
+    )
+
+    source = TellusDataSource()
+    results = run_async(
+        source.get_data_for_metrics(
+            [_metric()],
+            "KEN",
+            tellus_max_requests=max_requests,
+        )
+    )
+
+    assert len(results) == 5
+    assert search_peak <= max_requests
+    assert pipeline_peak <= max_requests
 
 
 async def _find_by_external_id(external_id: str) -> TellusDocument | None:

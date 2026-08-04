@@ -37,6 +37,9 @@ def test_search_raises_on_401(monkeypatch: pytest.MonkeyPatch) -> None:
     response = httpx.Response(401, request=httpx.Request("POST", "https://tellus.test"))
 
     class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
         async def __aenter__(self) -> Self:
             return self
 
@@ -60,6 +63,9 @@ def test_search_posts_expected_body(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {"chunks": [{"document_id": "d1"}], "documents": [{"document_id": "d1"}]}
 
     class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["timeout"] = kwargs.get("timeout")
+
         async def __aenter__(self) -> Self:
             return self
 
@@ -90,10 +96,11 @@ def test_search_posts_expected_body(monkeypatch: pytest.MonkeyPatch) -> None:
         tellus_search_chunks(
             "water availability",
             ["KEN"],
-            config=_config(min_year=2015, max_results=10),
+            config=_config(min_year=2015, max_results=10, timeout=90.0),
         )
     )
     assert result == payload
+    assert captured["timeout"] == 90.0
     assert captured["url"] == "https://tellus.test/api/v1/search"
     assert captured["headers"]["Authorization"] == "Bearer secret-token"
     assert captured["json"]["semantic_query"] == "water availability"
@@ -110,6 +117,9 @@ def test_get_all_document_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
         async def __aenter__(self) -> Self:
             return self
 

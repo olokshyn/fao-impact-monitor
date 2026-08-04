@@ -33,6 +33,7 @@ dependencies = [
 fao-impact-monitor = "fao_impact_monitor:main"
 check = "fao_impact_monitor.check:app"
 clear-datalake = "fao_impact_monitor.clear_datalake:app"
+pipeline = "fao_impact_monitor.pipeline:app"
 install-browsers = "fao_impact_monitor.data_lake.scrapling:ensure_chromium_main"
 
 [build-system]

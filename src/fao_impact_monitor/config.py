@@ -106,6 +106,8 @@ class TellusConfig(BaseSettings):
     save_dir: Path = DATA_DIR / "tellus"
     min_year: int = 1997
     max_results: int = 50
+    # Semantic search routinely exceeds httpx's default 5s read timeout.
+    timeout: float = 120.0
 
 
 class VectorStoreConfig(BaseSettings):

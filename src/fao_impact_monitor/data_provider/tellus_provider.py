@@ -61,7 +61,7 @@ async def tellus_search_chunks(
         countries_iso3 or [],
     )
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=cfg.timeout) as client:
         response = await client.post(url, headers=headers, json=body)
         _raise_for_tellus_status(response)
         data = response.json()
@@ -91,7 +91,7 @@ async def tellus_get_all_document_chunks(
     url = f"{cfg.api_base.rstrip('/')}/api/v1/sources/document/{document_id}/chunks"
     logger.info("Tellus fetch all chunks for document_id=%s", document_id)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=cfg.timeout) as client:
         response = await client.get(url, headers=headers)
         _raise_for_tellus_status(response)
         data = response.json()
