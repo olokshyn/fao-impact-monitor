@@ -219,7 +219,7 @@ def test_missing_chunk_iterator_param_raises(
         run_async(stage.run(doc, {}, []))
 
 
-def test_missing_extract_raises(
+def test_missing_extract_returns_failed(
     document_store: dict[str, Document],
     run_async: RunAsync[Any],
 ) -> None:
@@ -233,11 +233,15 @@ def test_missing_extract_raises(
         detect_fn=detect_fn,
         config=CountryDetectConfig(),
     )
-    with pytest.raises(ValueError, match=PDF_EXTRACT_STAGE_NAME):
-        run_async(stage.run(doc, _params(extracted_pdf_chunk_iterator), []))
+    result = run_async(stage.run(doc, _params(extracted_pdf_chunk_iterator), []))
+    assert isinstance(result, CountryDetectStageResult)
+    assert result.status == Status.FAILED
+    assert result.error is not None
+    assert PDF_EXTRACT_STAGE_NAME in result.error
+    assert result.detections == []
 
 
-def test_failed_extract_raises(
+def test_failed_extract_returns_failed(
     document_store: dict[str, Document],
     run_async: RunAsync[Any],
 ) -> None:
@@ -249,11 +253,14 @@ def test_failed_extract_raises(
         error="docling exploded",
     )
     stage = CountryDetectStage(config=CountryDetectConfig())
-    with pytest.raises(ValueError, match=PDF_EXTRACT_STAGE_NAME):
-        run_async(stage.run(doc, _params(extracted_pdf_chunk_iterator), [prev]))
+    result = run_async(stage.run(doc, _params(extracted_pdf_chunk_iterator), [prev]))
+    assert isinstance(result, CountryDetectStageResult)
+    assert result.status == Status.FAILED
+    assert result.error is not None
+    assert PDF_EXTRACT_STAGE_NAME in result.error
 
 
-def test_missing_page_file_raises(
+def test_missing_page_file_returns_failed(
     tmp_path: Path,
     document_store: dict[str, Document],
     run_async: RunAsync[Any],
@@ -262,11 +269,14 @@ def test_missing_page_file_raises(
     missing = tmp_path / "missing.md"
     doc = _pdf("https://example.com/g.pdf")
     stage = CountryDetectStage(config=CountryDetectConfig())
-    with pytest.raises(ValueError, match="not found"):
-        run_async(
-            stage.run(
-                doc,
-                _params(extracted_pdf_chunk_iterator),
-                [_extract_result([str(missing)])],
-            )
+    result = run_async(
+        stage.run(
+            doc,
+            _params(extracted_pdf_chunk_iterator),
+            [_extract_result([str(missing)])],
         )
+    )
+    assert isinstance(result, CountryDetectStageResult)
+    assert result.status == Status.FAILED
+    assert result.error is not None
+    assert "not found" in result.error

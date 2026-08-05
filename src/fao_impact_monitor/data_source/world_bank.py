@@ -6,6 +6,7 @@ import wbgapi as wb
 from pydantic import ConfigDict
 
 from fao_impact_monitor.metric.metric import Metric
+from fao_impact_monitor.utils.country import iso3_to_iso2
 
 from .data_source import DataResult, DataSource
 from .data_source_config import DataSourceConfig
@@ -67,7 +68,7 @@ class WorldBank(DataSource):
 
         series_info = wb.series.get(config.indicator)
         indicator_name = series_info.get("value", config.indicator)
-        url = f"https://data.worldbank.org/indicator/{config.indicator}"
+        url = world_bank_indicator_url(config.indicator, country_iso3)
         citation = (
             f'World Bank. "{indicator_name}". World Development Indicators. {url}'
         )
@@ -102,3 +103,9 @@ class WorldBank(DataSource):
         if start > end:
             raise ValueError(f"year_start ({start}) must be <= year_end ({end})")
         return range(start, end + 1)
+
+
+def world_bank_indicator_url(indicator: str, country_iso3: str) -> str:
+    """Country-specific World Bank indicator URL (ISO2 ``locations`` param)."""
+    iso2 = iso3_to_iso2(country_iso3)
+    return f"https://data.worldbank.org/indicator/{indicator}?locations={iso2}"

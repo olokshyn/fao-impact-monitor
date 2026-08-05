@@ -133,7 +133,16 @@ class EmbedChunksStage(Stage):
             )
 
         logger.info("Running embed_chunks for %s", document.url)
-        texts = list(chunk_iterator(prev_stages))
+        try:
+            texts = list(chunk_iterator(prev_stages))
+        except ValueError as exc:
+            logger.warning("embed_chunks skipped for %s: %s", document.url, exc)
+            return EmbedChunksStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=str(exc),
+                chunk_count=0,
+            )
         detections = country_detect.detections
         if len(detections) != len(texts):
             return EmbedChunksStageResult(
@@ -146,8 +155,25 @@ class EmbedChunksStage(Stage):
                 chunk_count=0,
             )
 
+        # Titan rejects empty strings; skip blank chunks but keep original indexes.
+        indexed_chunks = [
+            (index, text, detection)
+            for index, (text, detection) in enumerate(
+                zip(texts, detections, strict=True)
+            )
+            if text.strip()
+        ]
+        skipped = len(texts) - len(indexed_chunks)
+        if skipped:
+            logger.warning(
+                "embed_chunks skipping %s empty chunk(s) for %s",
+                skipped,
+                document.url,
+            )
+
+        embed_texts = [text for _, text, _ in indexed_chunks]
         try:
-            vectors = await self._embed_texts(texts, cfg)
+            vectors = await self._embed_texts(embed_texts, cfg)
         except Exception as exc:
             logger.exception("embed_chunks failed for %s", document.url)
             return EmbedChunksStageResult(
@@ -157,20 +183,21 @@ class EmbedChunksStage(Stage):
                 chunk_count=0,
             )
 
-        if len(vectors) != len(texts):
+        if len(vectors) != len(embed_texts):
             return EmbedChunksStageResult(
                 version_id=version_id,
                 status=Status.FAILED,
                 error=(
-                    f"embed_fn returned {len(vectors)} vectors for {len(texts)} chunks"
+                    f"embed_fn returned {len(vectors)} vectors for "
+                    f"{len(embed_texts)} chunks"
                 ),
                 chunk_count=0,
             )
 
         await ChunkEmbedding.find(ChunkEmbedding.document_id == document.id).delete()
 
-        for index, (text, vector, detection) in enumerate(
-            zip(texts, vectors, detections, strict=True)
+        for (index, text, detection), vector in zip(
+            indexed_chunks, vectors, strict=True
         ):
             countries = (
                 list(detection.countries_iso3)
@@ -195,7 +222,7 @@ class EmbedChunksStage(Stage):
         return EmbedChunksStageResult(
             version_id=version_id,
             status=Status.COMPLETED,
-            chunk_count=len(texts),
+            chunk_count=len(indexed_chunks),
         )
 
     async def _embed_texts(

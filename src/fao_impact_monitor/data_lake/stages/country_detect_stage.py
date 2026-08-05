@@ -114,7 +114,22 @@ class CountryDetectStage(Stage):
         chunk_iterator = _require_chunk_iterator(stage_params)
 
         logger.info("Running country_detect for %s", document.url)
-        texts = list(chunk_iterator(prev_stages))
+        # Upstream extract/fetch may have failed; the pipeline still invokes later
+        # stages with truncated prev_stages. Match embed_chunks: soft-fail.
+        try:
+            texts = list(chunk_iterator(prev_stages))
+        except ValueError as exc:
+            logger.warning(
+                "country_detect skipped for %s: %s",
+                document.url,
+                exc,
+            )
+            return CountryDetectStageResult(
+                version_id=version_id,
+                status=Status.FAILED,
+                error=str(exc),
+                detections=[],
+            )
 
         detections: list[CountryDetection] = []
         for index, text in enumerate(texts):

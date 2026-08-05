@@ -47,18 +47,25 @@ Extract ONLY verbatim quotations from the provided source texts that are
 relevant to the selected country and the metric or its documented gaps.
 
 Critical rules:
-1. Prefer claims that provide quantitative evidence.
-2. quoted_text MUST be an exact contiguous substring of the source text.
+1. Prefer claims that provide quantitative evidence (percentages, hectares,
+   tonnes, heads of livestock, production change, area affected, people
+   affected when tied to agricultural impact).
+2. Prefer claims from newer / more recent sources over older ones when both
+   are available (more recent publication year, report date, or data period).
+3. quoted_text MUST be an exact contiguous substring of the source text.
    Do not rewrite, clean up, correct, paraphrase, or invent quotations.
-3. Prefer the smallest self-contained quotation that preserves meaning.
+4. Prefer the smallest self-contained quotation that preserves meaning.
    Include neighboring context only when needed for country, units, dates,
    or qualifiers.
-4. Extract only claims clearly about the selected country unless the metric
+5. Extract only claims clearly about the selected country unless the metric
    explicitly requires cross-country comparison. A country name elsewhere in
    a long chunk is not enough.
-5. If a source has no relevant claim, return no claims for that source.
-6. Never use Metric.example or general knowledge as evidence.
-7. Do not invent claim_id values that collide with existing ids; leave
+6. Useful evidence includes: affected cropland/pasture/rangeland area or
+   share; production/yield loss; drought/flood severity by zone; El Niño
+   event attribution and years; subnational geography named in the source.
+7. If a source has no relevant claim, return no claims for that source.
+8. Never use Metric.example or general knowledge as evidence.
+9. Do not invent claim_id values that collide with existing ids; leave
    claim_id empty or temporary — the system assigns stable ids.
 """
 
@@ -67,23 +74,55 @@ You are an evidence-gap analyst for country-specific metric research.
 
 Given validated claims only, identify what is known and what is still missing
 to answer the metric for the selected country. Do not invent facts. Do not
-treat Metric.example as evidence. Only mark blocking gaps that are required
-to answer Metric.name and Metric.description in Metric.unit.
+treat Metric.example as evidence.
+
+Rules:
+1. Take Metric.name, Metric.description, Metric.unit, and Metric.example as
+   given. Do NOT invent gaps that critique or redefine the metric wording.
+2. Prefer quantitative completeness: missing percentages, hectares, tonnes,
+   heads of livestock, production/yield change, or other Metric.unit values
+   are high-priority gaps. Purely narrative weather descriptions ("heavy
+   rains began") without magnitudes are not enough to close the metric.
+3. Only mark blocking gaps that still prevent reporting useful national or
+   subnational findings for El Niño-related agricultural impacts.
+4. Missing coverage for some events/years is a remaining gap, not a reason to
+   discard solid findings already established for other events.
+5. When summarizing what is known, prefer findings from newer / more recent
+   sources over older ones if they conflict or supersede earlier figures.
+6. Keep established_facts concrete and claim-grounded; include numbers and
+   units whenever the claims provide them.
 """
 
 SUFFICIENCY_SYSTEM = """\
 You are an evidence-sufficiency judge for country-specific metric research.
 
-Decide whether the validated claims alone are enough to answer the metric
-without guessing, using model knowledge, Metric.example, unsupported
-causation, dropping material qualifications, combining incompatible
-periods/definitions/populations/units, or attributing multi-country findings
-to the selected country without textual support.
+Decide whether the validated claims support a useful, citation-backed answer
+for the selected country. The desired answer is QUANTITATIVE and aligned with
+Metric.unit / Metric.example depth (percentages, area, production change,
+livestock loss, etc.). A narrative-only finding ("heavy rains began",
+"severe flooding occurred") is not sufficient by itself.
+
+Set is_sufficient=true only when claims support at least one quantitative
+finding for the metric (number + unit or clear magnitude of change), even if
+not every event since 1997 is covered.
+
+Do NOT require a complete inventory of all El Niño events, perfect hectare
+numerators and denominators for every geography, or resolution of metric-
+definition debates before drafting.
+
+Prefer newer / more recent sources when claims conflict.
 
 Return next_action:
-- draft_answer if sufficient
-- generate_more_queries if insufficient but researchable
-- return_insufficient_evidence if gaps are unresolvable or research is exhausted
+- draft_answer if claims support one or more concrete findings (especially
+  quantitative; also draft when only qualitative findings exist so a
+  best-effort answer can still be written), even with remaining gaps
+- generate_more_queries if claims are too thin / lack needed quantities but
+  more research could help
+- return_insufficient_evidence ONLY when there are essentially no usable
+  country-specific findings and further research is unlikely to help
+
+Never refuse to draft merely because coverage is incomplete. Always prefer
+seeking or preserving quantitative evidence over qualitative narrative alone.
 """
 
 ANSWER_SYSTEM = """\
@@ -94,39 +133,91 @@ country using ONLY the validated claims provided. Never use general knowledge
 or Metric.example as factual content. Metric.example is style/depth guidance
 only.
 
+Primary goal: answer with QUANTITATIVE data whenever the claims allow —
+percentages, hectares/area, tonnes/production, yield change, livestock heads
+lost, people/households affected when tied to the metric, and other values
+in Metric.unit. Prefer statements that report magnitudes over purely
+narrative descriptions of weather or events ("heavy rains began", "floods
+occurred") when both are available.
+
+When the claims only partially cover the metric, still emit every statement
+that is supported. Incomplete event coverage is fine — report the events and
+geographies you can support, and omit the rest without inventing numbers.
+If only qualitative claims exist, still draft those statements (best-effort);
+do not invent numbers to fill gaps.
+
 Critical rules:
-1. Preserve quantitative information from the claims.
+1. Preserve and foreground quantitative information from the claims (include
+   the number and unit in the statement text).
 2. Each statement makes one independently verifiable assertion.
 3. Every factual statement must cite one or more supporting_claim_ids.
 4. Preserve all material qualifiers from claims (country, date/period, unit,
    population, geography, uncertainty, observed vs estimated/projected,
    correlation vs causation).
-5. Do not calculate unless inputs and formula are supported by claims and
+5. Prefer newer / more recent sources over older ones when claims conflict,
+   overlap, or offer alternative figures for the same aspect.
+6. Accept best available evidence for agricultural impact: affected area or
+   share of cultivated/pasture land, production/yield loss percentages,
+   severity by zone, and El Niño-attributed event impacts. State clearly
+   what quantity the source measured.
+7. Do not calculate unless inputs and formula are supported by claims and
    required by the metric.
-6. Do not invent facts absent from the claims.
+8. Do not invent facts absent from the claims.
 """
 
 VERIFY_SYSTEM = """\
-You are a strict entailment verifier. Use ONLY the provided statement and
-cited claims. Do not use general knowledge.
+You are an entailment verifier. Use ONLY the provided statement and cited
+claims. Do not use general knowledge.
 
 Verdicts:
-- entailed: the cited claims jointly and fully support the statement
-- partially_entailed: some but not all of the statement is supported
+- entailed: the cited claims jointly support the statement
+- partially_entailed: the core factual content is supported but some wording
+  is slightly broader than the claims
 - contradicted: claims conflict with the statement
 - insufficient: claims do not support the statement
 
-Reject statements that add facts, over-claim certainty, omit material
-limitations, use the wrong country/period/population/unit, convert
-estimate→fact or correlation→causation, combine claims illogically, or cite
-irrelevant claims. WebScout summaries are not evidence.
+Accept statements that faithfully report source quantities (including
+production loss, affected people/livestock, drought severity, or area
+impacts) with preserved qualifiers. Reject only clear over-claims: wrong
+country/period/unit, invented numbers, unsupported causation, or dropping
+material uncertainty/estimate language. WebScout summaries are not evidence.
 """
 
 REPAIR_SYSTEM = """\
-You revise an answer statement so it is strictly entailed by its cited
-claims. Do not invent facts. Preserve material qualifiers. If the statement
-cannot be repaired without unsupported content, set remove=true.
+You revise an answer statement so it is entailed by its cited claims.
+Tighten wording to the claims; preserve material qualifiers and uncertainty.
+Prefer keeping quantitative magnitudes (numbers and units) from the claims.
+Do not invent facts. Prefer a narrower true statement over remove=true.
+Set remove=true only when nothing claim-supported remains.
 """
+
+ResearcherStatus = Literal["answered", "high_level_answer", "cannot_answer"]
+
+STATUS_DISPLAY: dict[ResearcherStatus, str] = {
+    "answered": "answered",
+    "high_level_answer": "high level answer, lacking detailed evidence",
+    "cannot_answer": "cannot answer with available evidence",
+}
+
+# Years/months alone are not metric quantities ("rains began in 1997").
+_QUANTITATIVE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\d+(?:[.,]\d+)?\s*%",
+        r"\d+(?:[.,]\d+)?\s*(?:percent|per\s*cent)\b",
+        r"\d+(?:[.,]\d+)?\s*(?:ha\b|hectares?\b|acres?\b|km²|km2\b)",
+        r"\d+(?:[.,]\d+)?\s*(?:tonnes?\b|tons?\b|kg\b|mt\b)",
+        r"\d+(?:[.,]\d+)?\s*(?:million|billion)\b",
+        (
+            r"(?:fell|rose|increased|decreased|declined|dropped|grew|lost|"
+            r"loss(?:es)?)\s+(?:by\s+)?\d"
+        ),
+        (
+            r"\d+(?:[.,]\d+)?\s*(?:heads?\b|animals?\b|cattle\b|livestock\b|"
+            r"people\b|farmers?\b|households?\b)"
+        ),
+    )
+)
 
 
 class EvidenceClaim(BaseModel):
@@ -195,6 +286,7 @@ class StatementCitation(BaseModel):
     document_name: str
     document_uri: str
     page_number: int | None = None
+    origin: str | None = None
 
 
 class AnswerStatement(BaseModel):
@@ -237,6 +329,7 @@ class SourceReference(BaseModel):
     document_uri: str
     document_name: str
     page_number: int | None = None
+    document_source: str | None = None
 
 
 class RetrievedChunk(BaseModel):
@@ -254,7 +347,7 @@ class RetrievedChunk(BaseModel):
 
 
 class ResearcherOutput(BaseModel):
-    status: Literal["answered", "insufficient_evidence"]
+    status: ResearcherStatus
     country: str
     metric_name: str
     final_summary: str
@@ -297,7 +390,6 @@ def build_chat_model(
     *,
     llm_model: str,
     aws_bedrock_config: AwsBedrockConfig | None = None,
-    temperature: float | None = None,
 ) -> BaseChatModel:
     aws = aws_bedrock_config or get_config().aws_bedrock
     kwargs: dict[str, Any] = {
@@ -305,8 +397,6 @@ def build_chat_model(
         "base_url": aws.base_url,
         "use_responses_api": True,
     }
-    if temperature is not None:
-        kwargs["temperature"] = temperature
     chat_model = init_chat_model(llm_model, **kwargs)
     if not isinstance(chat_model, BaseChatModel):
         raise TypeError(f"Expected BaseChatModel, got {type(chat_model)}")
@@ -394,6 +484,7 @@ def _source_meta(state: ResearchState) -> dict[str, SourceReference]:
             document_uri=chunk.document_url,
             document_name=chunk.document_title or chunk.document_url,
             page_number=chunk.page_number,
+            document_source=chunk.document_source,
         )
     for source in state.web_sources:
         refs[source.source_id] = SourceReference(
@@ -402,8 +493,27 @@ def _source_meta(state: ResearchState) -> dict[str, SourceReference]:
             document_uri=source.url,
             document_name=source.title or source.url,
             page_number=source.page_number,
+            document_source=None,
         )
     return refs
+
+
+def format_source_origin(
+    *,
+    source_type: str,
+    document_source: str | None = None,
+) -> str:
+    """Human-readable origin label for citations / references."""
+    if source_type == "web":
+        return "web search"
+    raw = (document_source or "").strip().casefold().replace("_", "").replace(" ", "")
+    if raw == "tellus":
+        return "tellus"
+    if raw in {"faorepository", "faoknowledgerepository"}:
+        return "FAORepository"
+    if document_source and document_source.strip():
+        return document_source.strip()
+    return "vectorstore"
 
 
 def _claim_fingerprint(quoted_text: str, source_id: str) -> str:
@@ -467,6 +577,10 @@ def resolve_statement_citations(
                 document_name=ref.document_name,
                 document_uri=ref.document_uri,
                 page_number=ref.page_number,
+                origin=format_source_origin(
+                    source_type=ref.source_type,
+                    document_source=ref.document_source,
+                ),
             )
         )
     return citations
@@ -481,6 +595,126 @@ def build_final_summary(statements: Sequence[AnswerStatement]) -> str:
         else:
             parts.append(statement.text)
     return "\n\n".join(parts)
+
+
+def statements_have_quantitative_evidence(
+    statements: Sequence[AnswerStatement],
+) -> bool:
+    """True if any statement text reports a metric-relevant quantity."""
+    return any(
+        any(pattern.search(statement.text) for pattern in _QUANTITATIVE_PATTERNS)
+        for statement in statements
+    )
+
+
+def classify_researcher_status(
+    statements: Sequence[AnswerStatement],
+) -> ResearcherStatus:
+    """Map drafted findings to the report status label.
+
+    - answered: at least one quantitative finding
+    - high_level_answer: findings exist but lack detailed quantitative evidence
+    - cannot_answer: no supported findings to answer the metric
+    """
+    if not statements:
+        return "cannot_answer"
+    if statements_have_quantitative_evidence(statements):
+        return "answered"
+    return "high_level_answer"
+
+
+def build_answered_summary(
+    *,
+    statements: Sequence[AnswerStatement],
+    gaps: Sequence[EvidenceGap],
+) -> str:
+    """Findings first; remaining open gaps second (if any)."""
+    parts: list[str] = []
+    if statements:
+        parts.append(build_final_summary(statements))
+    unresolved = [g for g in gaps if g.status in {"open", "unresolvable"}]
+    if unresolved:
+        parts.append("### Remaining evidence gaps")
+        parts.append("\n".join(_format_gap_markdown(g) for g in unresolved))
+    return "\n\n".join(parts) if parts else ""
+
+
+def _format_gap_markdown(gap: EvidenceGap) -> str:
+    """Format one open/unresolvable gap, including soft source references."""
+    lines = [f"- **{gap.gap_id}**: {gap.description} ({gap.why_required})"]
+    refs: list[str] = []
+    if gap.preferred_source_type:
+        refs.append(f"preferred source: `{gap.preferred_source_type}`")
+    if gap.suggested_terms:
+        terms = ", ".join(f"`{t}`" for t in gap.suggested_terms)
+        refs.append(f"suggested terms: {terms}")
+    for ref in refs:
+        lines.append(f"  - {ref}")
+    return "\n".join(lines)
+
+
+def build_high_level_summary(
+    *,
+    statements: Sequence[AnswerStatement],
+    gaps: Sequence[EvidenceGap],
+) -> str:
+    """Best-effort qualitative findings, then remaining gaps."""
+    return build_answered_summary(statements=statements, gaps=gaps)
+
+
+def build_cannot_answer_summary(
+    *,
+    country_name: str,
+    gaps: Sequence[EvidenceGap],
+    statements: Sequence[AnswerStatement],
+) -> str:
+    """Explain that evidence cannot answer; still include any findings/gaps."""
+    parts: list[str] = [
+        (f"The available evidence cannot answer this metric for {country_name}.")
+    ]
+    unresolved = [g for g in gaps if g.status in {"open", "unresolvable"}]
+    if unresolved:
+        parts.append("### Evidence gaps")
+        parts.append("\n".join(_format_gap_markdown(g) for g in unresolved))
+    if statements:
+        parts.append("### Supported findings")
+        parts.append(build_final_summary(statements))
+    elif not unresolved:
+        parts.append("No supported findings or unresolved gaps were recorded.")
+    return "\n\n".join(parts)
+
+
+def build_insufficient_summary(
+    *,
+    country_name: str,
+    gaps: Sequence[EvidenceGap],
+    statements: Sequence[AnswerStatement],
+) -> str:
+    """Backward-compatible alias for cannot-answer summaries."""
+    return build_cannot_answer_summary(
+        country_name=country_name,
+        gaps=gaps,
+        statements=statements,
+    )
+
+
+def build_status_summary(
+    *,
+    status: ResearcherStatus,
+    country_name: str,
+    statements: Sequence[AnswerStatement],
+    gaps: Sequence[EvidenceGap],
+) -> str:
+    """Build the markdown body for a researcher status (without the Status line)."""
+    if status == "answered":
+        return build_answered_summary(statements=statements, gaps=gaps)
+    if status == "high_level_answer":
+        return build_high_level_summary(statements=statements, gaps=gaps)
+    return build_cannot_answer_summary(
+        country_name=country_name,
+        gaps=gaps,
+        statements=statements,
+    )
 
 
 def _example_leaked(text: str, example: str) -> bool:
@@ -507,13 +741,9 @@ async def research(
     """Run the bounded iterative researcher loop and return structured output."""
     cfg = config or get_config().researcher
     country_name = iso3_to_country_name(country_iso3)
-    main_model = model or build_chat_model(
-        llm_model=cfg.llm_model,
-        temperature=0,
-    )
+    main_model = model or build_chat_model(llm_model=cfg.llm_model)
     verify_model = verifier_model or build_chat_model(
         llm_model=cfg.verifier_llm_model,
-        temperature=0,
     )
     query_gen = generate_research_queries_fn or generate_research_queries
 
@@ -522,14 +752,22 @@ async def research(
         country_iso3=country_iso3.upper(),
         country_name=country_name,
     )
+    logger.info(
+        "Researcher START country=%s metric=%r max_iterations=%s",
+        state.country_iso3,
+        metric.name,
+        cfg.max_research_iterations,
+    )
 
     while state.research_iteration < cfg.max_research_iterations:
         state.research_iteration += 1
+        remaining = cfg.max_research_iterations - state.research_iteration
         logger.info(
-            "Researcher iteration %s/%s for %s / %s",
+            "Researcher STAGE=iteration %s/%s remaining=%s country=%s metric=%r",
             state.research_iteration,
             cfg.max_research_iterations,
-            country_iso3,
+            remaining,
+            state.country_iso3,
             metric.name,
         )
 
@@ -546,6 +784,11 @@ async def research(
         else:
             preferred = ["vectorstore", "both"]
 
+        logger.info(
+            "Researcher STAGE=queries open_gaps=%s preferred_destinations=%s",
+            [g.gap_id for g in open_gaps],
+            preferred,
+        )
         try:
             queries = await query_gen(
                 research_question=metric.name,
@@ -589,19 +832,22 @@ async def research(
         state.current_queries = fresh[: cfg.max_queries_per_iteration]
         state.all_queries.extend(state.current_queries)
         logger.info(
-            "Generated %s quer%s: %s",
+            "Researcher STAGE=queries done count=%s details=%s",
             len(state.current_queries),
-            "y" if len(state.current_queries) == 1 else "ies",
             [(q.query, q.purpose, q.destination) for q in state.current_queries],
         )
         if not state.current_queries:
             state.termination_reason = "no_new_queries"
             break
 
+        logger.info("Researcher STAGE=vector_retrieve")
         new_chunks: list[RetrievedChunk] = []
         known_chunk_ids = {c.source_id for c in state.vector_chunks}
         for q in state.current_queries:
             state.executed_queries.append(q.query)
+            if not q.query.strip():
+                logger.warning("Researcher skipping empty vector query")
+                continue
             if q.destination in {"vectorstore", "both"}:
                 try:
                     hits = await vector_store.search(
@@ -625,14 +871,28 @@ async def research(
 
         # Conditional web research only when a prior sufficiency decision (or an
         # explicit web-only follow-up) says material gaps need the open web.
+        # Cap web-scout calls by both the configured limit and the number of
+        # queries actually produced for this round (never more than generated).
         web_queries = [
             q for q in state.current_queries if q.destination in {"web", "both"}
         ]
-        run_web = bool(web_queries) and state.needs_web
+        web_budget = min(
+            cfg.max_web_queries_per_iteration,
+            len(state.current_queries),
+            len(web_queries),
+        )
+        run_web = web_budget > 0 and state.needs_web
         new_web: list[WebSource] = []
         if run_web:
+            selected_web = web_queries[:web_budget]
+            logger.info(
+                "Researcher STAGE=web_retrieve queries=%s budget=%s generated=%s",
+                [q.query for q in selected_web],
+                web_budget,
+                len(state.current_queries),
+            )
             known_web = {s.source_id for s in state.web_sources}
-            for q in web_queries[: cfg.max_web_queries_per_iteration]:
+            for q in selected_web:
                 try:
                     mapped = await run_web_scout_research(
                         q.query,
@@ -658,10 +918,15 @@ async def research(
                     state.web_sources.append(source)
                     new_web.append(source)
         else:
-            logger.info("Skipping web research this iteration")
+            logger.info(
+                "Researcher STAGE=web_retrieve skipped needs_web=%s web_candidates=%s",
+                state.needs_web,
+                len(web_queries),
+            )
 
         logger.info(
-            "Retrieved %s new chunk(s), %s new web source(s); totals %s / %s",
+            "Researcher STAGE=retrieve done new_chunks=%s new_web=%s "
+            "totals chunks=%s web=%s",
             len(new_chunks),
             len(new_web),
             len(state.vector_chunks),
@@ -672,20 +937,33 @@ async def research(
         state.claim_extraction_retries = 0
         newly_validated: list[EvidenceClaim] = []
         while True:
+            logger.info(
+                "Researcher STAGE=extract_claims retry=%s/%s",
+                state.claim_extraction_retries,
+                cfg.max_claim_extraction_retries,
+            )
             candidates = await _extract_claims(
                 state,
                 model=main_model,
                 new_chunks=new_chunks,
                 new_web=new_web,
             )
+            logger.info(
+                "Researcher STAGE=validate_claims candidates=%s", len(candidates)
+            )
             accepted, rejected = _validate_claim_candidates(state, candidates)
             newly_validated.extend(accepted)
             state.rejected_claims.extend(rejected)
+            reject_reasons: dict[str, int] = {}
+            for item in rejected:
+                reject_reasons[item.reason] = reject_reasons.get(item.reason, 0) + 1
             logger.info(
-                "Claims: accepted=%s rejected=%s (retry=%s)",
+                "Researcher STAGE=validate_claims accepted=%s rejected=%s "
+                "validated_total=%s reject_reasons=%s",
                 len(accepted),
                 len(rejected),
-                state.claim_extraction_retries,
+                len(state.validated_claims),
+                reject_reasons,
             )
             if accepted or state.claim_extraction_retries >= (
                 cfg.max_claim_extraction_retries
@@ -695,19 +973,29 @@ async def research(
                 break
             state.claim_extraction_retries += 1
 
-        # Gap analysis + sufficiency.
+        logger.info("Researcher STAGE=gap_analysis")
         await _assess_gaps(state, model=main_model)
+        logger.info(
+            "Researcher STAGE=gap_analysis done open=%s closed=%s facts=%s",
+            sum(1 for g in state.gaps if g.status == "open"),
+            sum(1 for g in state.gaps if g.status == "closed"),
+            len(state.established_facts),
+        )
+        logger.info("Researcher STAGE=sufficiency")
         await _assess_sufficiency(state, model=main_model, config=cfg)
         assert state.sufficiency is not None
         logger.info(
-            "Sufficiency: sufficient=%s next=%s open_gaps=%s",
+            "Researcher STAGE=sufficiency done sufficient=%s next_action=%s "
+            "open_gaps=%s needs_web=%s",
             state.sufficiency.is_sufficient,
             state.sufficiency.next_action,
             state.sufficiency.open_gap_ids,
+            state.sufficiency.needs_web,
         )
         state.needs_web = state.sufficiency.needs_web
 
         if state.sufficiency.next_action == "draft_answer":
+            logger.info("Researcher STAGE=draft_answer")
             await _draft_and_verify(
                 state,
                 model=main_model,
@@ -715,30 +1003,57 @@ async def research(
                 config=cfg,
             )
             if state.verified_statements:
-                state.termination_reason = "answered"
-                return _finalize(state, status="answered")
+                status = classify_researcher_status(state.verified_statements)
+                state.termination_reason = status
+                output = _finalize(state, status=status)
+                logger.info(
+                    "Researcher END status=%s statements=%s claims=%s iterations=%s",
+                    status,
+                    len(output.statements),
+                    len(output.claims),
+                    output.research_iterations,
+                )
+                return output
             # Could not produce verified statements — try more research if possible.
             if state.research_iteration >= cfg.max_research_iterations:
                 state.termination_reason = "verification_failed_limit"
                 break
+            logger.info(
+                "Researcher STAGE=draft_answer produced no verified statements; "
+                "continuing research"
+            )
             continue
 
         if state.sufficiency.next_action == "return_insufficient_evidence":
-            state.termination_reason = "insufficient_evidence"
+            state.termination_reason = "cannot_answer"
             break
 
         # generate_more_queries
         if state.research_iteration >= cfg.max_research_iterations:
             state.termination_reason = "research_iteration_limit"
             break
+        logger.info(
+            "Researcher STAGE=generate_more_queries continuing to next iteration"
+        )
 
-    # Exhausted loop — attempt draft from whatever we have if claims exist.
+    # Insufficient / exhausted — still draft every statement the claims support.
     if state.validated_claims and not state.verified_statements:
+        logger.info(
+            "Researcher STAGE=draft_answer (partial findings from available claims)"
+        )
         state.sufficiency = EvidenceSufficiency(
             is_sufficient=False,
-            supported_metric_aspects=[],
+            supported_metric_aspects=list(
+                state.sufficiency.supported_metric_aspects
+                if state.sufficiency is not None
+                else []
+            ),
             open_gap_ids=[g.gap_id for g in state.gaps if g.status == "open"],
-            reasoning="Research limits reached; drafting from available claims.",
+            reasoning=(
+                state.sufficiency.reasoning
+                if state.sufficiency is not None
+                else "Research incomplete; drafting supported findings only."
+            ),
             next_action="draft_answer",
         )
         await _draft_and_verify(
@@ -747,21 +1062,35 @@ async def research(
             verifier_model=verify_model,
             config=cfg,
         )
-        # Fail closed: limits reached without a prior sufficient judgment.
-        if state.verified_statements and state.termination_reason in {
-            None,
-            "research_iteration_limit",
-            "no_new_queries",
-        }:
-            return _finalize(
-                state,
-                status="insufficient_evidence",
-                partial=True,
-            )
 
-    state.termination_reason = state.termination_reason or "insufficient_evidence"
-    logger.info("Researcher terminating: %s", state.termination_reason)
-    return _finalize(state, status="insufficient_evidence")
+    if state.verified_statements:
+        status = classify_researcher_status(state.verified_statements)
+        state.termination_reason = state.termination_reason or status
+        output = _finalize(state, status=status)
+        logger.info(
+            "Researcher END status=%s statements=%s claims=%s "
+            "gaps=%s reason=%s iterations=%s",
+            status,
+            len(output.statements),
+            len(output.claims),
+            len(output.open_gaps),
+            state.termination_reason,
+            output.research_iterations,
+        )
+        return output
+
+    state.termination_reason = state.termination_reason or "cannot_answer"
+    output = _finalize(state, status="cannot_answer")
+    logger.info(
+        "Researcher END status=cannot_answer statements=%s claims=%s "
+        "gaps=%s reason=%s iterations=%s",
+        len(output.statements),
+        len(output.claims),
+        len(output.open_gaps),
+        state.termination_reason,
+        output.research_iterations,
+    )
+    return output
 
 
 async def _extract_claims(
@@ -979,9 +1308,15 @@ async def _assess_sufficiency(
         user=user,
     )
     assert isinstance(result, EvidenceSufficiency)
+    # Prefer drafting a best-effort answer whenever we already have claims.
+    if state.validated_claims and result.next_action == "return_insufficient_evidence":
+        result.next_action = "draft_answer"
     if iterations_left <= 0 and result.next_action == "generate_more_queries":
-        result.next_action = "return_insufficient_evidence"
-        result.is_sufficient = False
+        if state.validated_claims:
+            result.next_action = "draft_answer"
+        else:
+            result.next_action = "return_insufficient_evidence"
+            result.is_sufficient = False
     if not state.validated_claims and result.next_action == "draft_answer":
         result.next_action = (
             "generate_more_queries"
@@ -1011,7 +1346,11 @@ async def _draft_and_verify(
     user = (
         f"{_metric_prompt_block(state.metric, state.country_name, state.country_iso3)}"
         f"\n{style}\n\nValidated claims:\n{claims_block}\n\n"
-        "Produce atomic answer statements with supporting_claim_ids."
+        "Produce atomic answer statements with supporting_claim_ids. "
+        "Prioritize quantitative findings (numbers + units matching the metric) "
+        "over qualitative narrative alone. "
+        "Prefer newer / more recent sources over older ones when claims "
+        "conflict or overlap."
     )
     drafted = await _structured_invoke(
         model,
@@ -1039,11 +1378,21 @@ async def _draft_and_verify(
             )
         )
     state.draft_statements = statements
+    logger.info(
+        "Researcher STAGE=draft_answer done draft_statements=%s",
+        len(statements),
+    )
 
     verified: list[AnswerStatement] = []
     for statement in statements:
         current = statement
         for attempt in range(config.max_answer_verification_retries + 1):
+            logger.info(
+                "Researcher STAGE=verify_statements statement=%s attempt=%s/%s",
+                current.statement_id,
+                attempt,
+                config.max_answer_verification_retries,
+            )
             verification = await _verify_statement(
                 state,
                 current,
@@ -1051,15 +1400,32 @@ async def _draft_and_verify(
             )
             state.verifications.append(verification)
             logger.info(
-                "Verification %s attempt=%s verdict=%s",
+                "Researcher STAGE=verify_statements statement=%s verdict=%s",
                 current.statement_id,
-                attempt,
                 verification.verdict,
             )
             if verification.verdict == "entailed":
                 verified.append(current)
                 break
+            if (
+                verification.verdict == "partially_entailed"
+                and attempt >= config.max_answer_verification_retries
+            ):
+                # Keep a narrowed statement rather than discarding usable evidence.
+                logger.info(
+                    "Researcher STAGE=verify_statements statement=%s "
+                    "accepting partially_entailed after retries",
+                    current.statement_id,
+                )
+                verified.append(current)
+                break
             if attempt >= config.max_answer_verification_retries:
+                logger.info(
+                    "Researcher STAGE=verify_statements statement=%s dropped "
+                    "verdict=%s",
+                    current.statement_id,
+                    verification.verdict,
+                )
                 break
             repaired = await _repair_statement(
                 state,
@@ -1068,9 +1434,19 @@ async def _draft_and_verify(
                 model=model,
             )
             if repaired is None:
+                logger.info(
+                    "Researcher STAGE=verify_statements statement=%s "
+                    "repair removed statement",
+                    current.statement_id,
+                )
                 break
             current = repaired
     state.verified_statements = verified
+    logger.info(
+        "Researcher STAGE=verify_statements done verified=%s drafted=%s",
+        len(verified),
+        len(statements),
+    )
 
 
 async def _verify_statement(
@@ -1154,8 +1530,7 @@ async def _repair_statement(
 def _finalize(
     state: ResearchState,
     *,
-    status: Literal["answered", "insufficient_evidence"],
-    partial: bool = False,
+    status: ResearcherStatus,
 ) -> ResearcherOutput:
     sources = _source_meta(state)
     statements: list[AnswerStatement] = []
@@ -1170,26 +1545,17 @@ def _finalize(
     cited_source_ids = {c.source_id for c in claims}
     source_list = [sources[sid] for sid in cited_source_ids if sid in sources]
 
-    if status == "answered":
-        final_summary = build_final_summary(statements)
-    else:
-        gap_lines = [
-            f"- {g.gap_id}: {g.description} ({g.why_required})"
-            for g in state.gaps
-            if g.status in {"open", "unresolvable"}
-        ]
-        prefix = (
-            "The available evidence is insufficient to fully answer this metric "
-            f"for {state.country_name}."
-        )
-        if gap_lines:
-            prefix += " Unresolved gaps:\n" + "\n".join(gap_lines)
-        if partial and statements:
-            prefix += (
-                "\n\nPartial findings (incomplete; do not treat as a full answer):\n\n"
-                + build_final_summary(statements)
-            )
-        final_summary = prefix
+    # Re-classify from finalized statements so status matches report content.
+    status = classify_researcher_status(statements) if statements else status
+    if not statements:
+        status = "cannot_answer"
+
+    final_summary = build_status_summary(
+        status=status,
+        country_name=state.country_name,
+        statements=statements,
+        gaps=state.gaps,
+    )
 
     output = ResearcherOutput(
         status=status,

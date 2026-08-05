@@ -89,7 +89,7 @@ class ResearcherConfig(BaseSettings):
     max_research_iterations: int = 3
     max_queries_per_iteration: int = 5
     vector_results_per_query: int = 8
-    max_web_queries_per_iteration: int = 2
+    max_web_queries_per_iteration: int = 3
     max_claim_extraction_retries: int = 2
     max_answer_verification_retries: int = 2
     max_agent_retries: int = 3

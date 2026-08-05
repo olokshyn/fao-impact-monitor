@@ -6,3 +6,4 @@ class DataSourceConfig(BaseModel):
 
     source: str
     unit: str | None = None
+    exclusive: bool = False

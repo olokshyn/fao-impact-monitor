@@ -18,3 +18,5 @@ wheels/
 fetched_data/
 
 **/.DS_Store
+
+reports/

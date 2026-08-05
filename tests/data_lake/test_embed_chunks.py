@@ -320,3 +320,52 @@ def test_embed_chunks_uses_empty_countries_on_detection_error(
     chunks = run_async(ChunkEmbedding.find_all().to_list())
     assert len(chunks) == 1
     assert chunks[0].countries_iso3 == []
+
+
+def test_embed_chunks_skips_empty_chunk_texts(
+    document_store: dict[str, Document],
+    run_async: RunAsync[Any],
+    tmp_path: Path,
+) -> None:
+    del document_store
+    page1 = tmp_path / "page-1.md"
+    page2 = tmp_path / "page-2.md"
+    page3 = tmp_path / "page-3.md"
+    page1.write_text("Kenya maize.", encoding="utf-8")
+    page2.write_text("   \n\t  ", encoding="utf-8")
+    page3.write_text("Uganda beans.", encoding="utf-8")
+
+    doc = PdfDocument(
+        url="https://example.com/empty-pages.pdf",
+        pipeline_statuses={"pdf_process": Status.PENDING},
+    )
+    run_async(doc.insert())
+
+    embedded: list[str] = []
+
+    async def embed_fn(texts: Sequence[str]) -> list[list[float]]:
+        embedded.extend(texts)
+        return [[float(i)] for i in range(len(texts))]
+
+    stage = EmbedChunksStage(embed_fn=embed_fn, config=VectorStoreConfig())
+    prev: list[StageResult] = [
+        _extract_result([str(page1), str(page2), str(page3)]),
+        _country_result(
+            [
+                CountryDetection(
+                    countries_iso3=["KEN"], detections=["Kenya"], error=None
+                ),
+                CountryDetection(countries_iso3=[], detections=[], error=None),
+                CountryDetection(
+                    countries_iso3=["UGA"], detections=["Uganda"], error=None
+                ),
+            ]
+        ),
+    ]
+    result = run_async(stage.run(doc, _params(extracted_pdf_chunk_iterator), prev))
+    assert result.status == Status.COMPLETED
+    assert isinstance(result, EmbedChunksStageResult)
+    assert result.chunk_count == 2
+    assert embedded == ["Kenya maize.", "Uganda beans."]
+    chunks = run_async(ChunkEmbedding.find_all().to_list())
+    assert {c.chunk_index for c in chunks} == {0, 2}

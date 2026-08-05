@@ -122,7 +122,9 @@ def test_get_data_returns_tidy_dataframe(monkeypatch: pytest.MonkeyPatch) -> Non
     assert isinstance(result, WorldBankDataResult)
     assert result.source == "WorldBank"
     assert result.title == "Agriculture, forestry, and fishing, value added (% of GDP)"
-    assert result.url == "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS"
+    assert (
+        result.url == "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS?locations=KE"
+    )
     assert "World Development Indicators" in result.citation
     assert result.metadata == {
         "indicator": "NV.AGR.TOTL.ZS",
@@ -166,7 +168,9 @@ def test_get_data_fetches_ken_agriculture_share_of_gdp() -> None:
     assert result.source == "WorldBank"
     assert result.metadata["indicator"] == "NV.AGR.TOTL.ZS"
     assert result.metadata["country_iso3"] == "KEN"
-    assert result.url == "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS"
+    assert (
+        result.url == "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS?locations=KE"
+    )
     assert "Agriculture" in (result.title or "")
     assert list(result.data.columns) == ["year", "value"]
     assert set(result.data["year"]) <= {2020, 2021, 2022, 2023}

@@ -377,6 +377,8 @@ class VectorStore:
         return self._config or get_config().vector_store
 
     async def _embed_query(self, query: str) -> list[float]:
+        if not query.strip():
+            raise ValueError("Cannot embed an empty query")
         if self._embed_query_fn is not None:
             return await self._embed_query_fn(query)
         return await _default_embed_query(query)
@@ -393,6 +395,9 @@ class VectorStore:
         countries_iso3: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[ChunkHit]:
+        if not query.strip():
+            logger.warning("search_vector skipped: empty query")
+            return []
         query_vector = await self._embed_query(query)
         pipeline = build_vector_pipeline(
             query_vector,
@@ -410,6 +415,9 @@ class VectorStore:
         countries_iso3: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[ChunkHit]:
+        if not query.strip():
+            logger.warning("search_bm25 skipped: empty query")
+            return []
         pipeline = build_bm25_pipeline(
             query,
             config=self.config,
@@ -427,6 +435,9 @@ class VectorStore:
         limit: int | None = None,
     ) -> list[ChunkHit]:
         """Hybrid BM25 + vector search fused with ``$rankFusion``."""
+        if not query.strip():
+            logger.warning("search skipped: empty query")
+            return []
         query_vector = await self._embed_query(query)
         pipeline = build_hybrid_pipeline(
             query,

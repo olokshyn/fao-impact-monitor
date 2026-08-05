@@ -264,3 +264,27 @@ def test_vectorstore_search_vector_and_bm25(
     run_async(store.search_vector("q"))
     run_async(store.search_bm25("q"))
     assert seen == ["vector", "bm25"]
+
+
+def test_vectorstore_search_skips_empty_query_without_embedding(
+    run_async: RunAsync[Any],
+) -> None:
+    called = False
+
+    async def embed_query(query: str) -> list[float]:
+        nonlocal called
+        called = True
+        return [0.1]
+
+    async def aggregate(pipeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        raise AssertionError(f"aggregate should not run for empty query: {pipeline}")
+
+    store = VectorStore(
+        config=_cfg(),
+        embed_query_fn=embed_query,
+        aggregate_fn=aggregate,
+    )
+    assert run_async(store.search("   ")) == []
+    assert run_async(store.search_vector("")) == []
+    assert run_async(store.search_bm25("\n")) == []
+    assert called is False
