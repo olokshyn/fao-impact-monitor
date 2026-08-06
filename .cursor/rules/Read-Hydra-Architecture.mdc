@@ -1,0 +1,14 @@
+---
+alwaysApply: true
+---
+
+Read ./HYDRA_ARCHITECTURE.md to understand the following types or when you need to work with code in src/fao_impact_monitor/hydra:
+
+* Document
+* Task
+* Stage, StageResult
+* Workflow, WorkflowNode, WorkflowBranch
+* Run
+* Executor
+
+If you make any changes to these types or code in src/fao_impact_monitor/hydra then make sure to keep the ./HYDRA_ARCHITECTURE.md architecture file in sync.
