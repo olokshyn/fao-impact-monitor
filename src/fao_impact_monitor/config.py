@@ -4,6 +4,8 @@ from urllib.parse import quote_plus
 from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from fao_impact_monitor.hydra.config import HydraConfig
+
 DATA_DIR = Path(__file__).parent.parent.parent / "fetched_data"
 
 _COMMON_SETTINGS = SettingsConfigDict(
@@ -167,6 +169,7 @@ class Config(BaseSettings):
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)
+    hydra: HydraConfig = Field(default_factory=HydraConfig)
 
 
 def get_config() -> Config:
