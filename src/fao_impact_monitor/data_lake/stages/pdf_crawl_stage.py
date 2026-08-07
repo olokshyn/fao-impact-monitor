@@ -22,15 +22,15 @@ from fao_impact_monitor.data_lake.document import (
 )
 from fao_impact_monitor.data_lake.documents.pdf_document import PdfDocument
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
-from fao_impact_monitor.data_lake.scrapling import (
-    HTML_MAGIC_BYTES,
-    PDF_MAGIC_BYTES,
-    reliable_fetch,
-)
 from fao_impact_monitor.data_lake.stage import (
     Stage,
     StageResult,
     StageVersion,
+)
+from fao_impact_monitor.hydra.scrapling import (
+    HTML_MAGIC_BYTES,
+    PDF_MAGIC_BYTES,
+    reliable_fetch,
 )
 
 logger = logging.getLogger(__name__)

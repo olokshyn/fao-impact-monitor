@@ -13,7 +13,6 @@ from fao_impact_monitor.data_lake.document import (
     RelationType,
 )
 from fao_impact_monitor.data_lake.documents.web_page_document import WebPageDocument
-from fao_impact_monitor.data_lake.scrapling import fetch
 from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PDF_CRAWL_STAGE_NAME,
     PIPELINE_FOR_PDF_PARAM,
@@ -21,6 +20,7 @@ from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PdfCrawlStage,
     PdfCrawlStageResult,
 )
+from fao_impact_monitor.hydra.scrapling import fetch
 from tests.data_lake.mock_http_server import MockHttpServer
 
 T = TypeVar("T")

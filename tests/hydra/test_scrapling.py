@@ -5,7 +5,7 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 from curl_cffi.curl import CurlError
 
-from fao_impact_monitor.data_lake.scrapling import (
+from fao_impact_monitor.hydra.scrapling import (
     HTML_MAGIC_BYTES,
     PDF_MAGIC_BYTES,
     _fao_bitstream_api_content_url,
@@ -54,7 +54,7 @@ CHROME_PDF_VIEWER_SHELL = (
 def test_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
     get = AsyncMock(return_value=SimpleNamespace(body=b"%PDF-1.4 content"))
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.AsyncFetcher.get",
+        "fao_impact_monitor.hydra.scrapling.AsyncFetcher.get",
         get,
     )
 
@@ -74,7 +74,7 @@ def test_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fetch_encodes_string_body(monkeypatch: pytest.MonkeyPatch) -> None:
     get = AsyncMock(return_value=SimpleNamespace(body="<html/>"))
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.AsyncFetcher.get",
+        "fao_impact_monitor.hydra.scrapling.AsyncFetcher.get",
         get,
     )
 
@@ -107,11 +107,11 @@ def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) ->
     async_fetch = AsyncMock(side_effect=run_page_action)
     stealthy_fetcher = SimpleNamespace(async_fetch=async_fetch)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.ensure_chromium",
+        "fao_impact_monitor.hydra.scrapling.ensure_chromium",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling._stealthy_fetcher",
+        "fao_impact_monitor.hydra.scrapling._stealthy_fetcher",
         lambda: stealthy_fetcher,
     )
 
@@ -178,11 +178,11 @@ def test_browser_fetch_uses_network_captured_pdf(
     async_fetch = AsyncMock(side_effect=run_with_network)
     stealthy_fetcher = SimpleNamespace(async_fetch=async_fetch)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.ensure_chromium",
+        "fao_impact_monitor.hydra.scrapling.ensure_chromium",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling._stealthy_fetcher",
+        "fao_impact_monitor.hydra.scrapling._stealthy_fetcher",
         lambda: stealthy_fetcher,
     )
 
@@ -242,9 +242,9 @@ def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
 ) -> None:
     fetch_mock = AsyncMock(return_value=CHROME_PDF_VIEWER_SHELL)
     browser_mock = AsyncMock(return_value=b"%PDF-1.4 real-bytes")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -279,9 +279,9 @@ def test_reliable_fetch_uses_fao_bitstream_api_content_url(
     pdf_bytes = b"%PDF-1.7 from-api"
     fetch_mock = AsyncMock(return_value=pdf_bytes)
     browser_mock = AsyncMock(return_value=b"unused")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -342,11 +342,11 @@ def test_browser_fetch_rendered_returns_page_content(
     async_fetch = AsyncMock(side_effect=run_page_action)
     stealthy_fetcher = SimpleNamespace(async_fetch=async_fetch)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.ensure_chromium",
+        "fao_impact_monitor.hydra.scrapling.ensure_chromium",
         lambda **_kwargs: None,
     )
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling._stealthy_fetcher",
+        "fao_impact_monitor.hydra.scrapling._stealthy_fetcher",
         lambda: stealthy_fetcher,
     )
 
@@ -366,9 +366,9 @@ def test_reliable_fetch_uses_fetch_when_successful(
 ) -> None:
     fetch_mock = AsyncMock(return_value=b"http-body" + b"x" * 600)
     browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -405,9 +405,9 @@ def test_reliable_fetch_uses_browser_on_http_error(
 ) -> None:
     fetch_mock = AsyncMock(side_effect=CurlError("network down"))
     browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -448,9 +448,9 @@ def test_reliable_fetch_uses_browser_for_spa_shell(
     browser_mock = AsyncMock(
         return_value=b"<html><body><a href='/pub.pdf'>PDF</a></body></html>"
     )
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -482,9 +482,9 @@ def test_reliable_fetch_spa_shell_on_download_url_uses_raw(
 ) -> None:
     fetch_mock = AsyncMock(return_value=FAO_SPA_SHELL)
     browser_mock = AsyncMock(return_value=b"%PDF-1.7 raw-bytes")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -518,9 +518,9 @@ def test_reliable_fetch_does_not_fallback_on_non_http_error(
 ) -> None:
     fetch_mock = AsyncMock(side_effect=ValueError("bad url"))
     browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -535,9 +535,9 @@ def test_reliable_fetch_propagates_browser_error(
 ) -> None:
     fetch_mock = AsyncMock(side_effect=CurlError("network down"))
     browser_mock = AsyncMock(side_effect=RuntimeError("browser failed"))
-    monkeypatch.setattr("fao_impact_monitor.data_lake.scrapling.fetch", fetch_mock)
+    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.browser_fetch",
         browser_mock,
     )
 
@@ -550,11 +550,11 @@ def test_ensure_chromium_skips_when_installed(
 ) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.chromium_installed",
+        "fao_impact_monitor.hydra.scrapling.chromium_installed",
         lambda: True,
     )
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.subprocess.run",
+        "fao_impact_monitor.hydra.scrapling.subprocess.run",
         lambda cmd, check: calls.append(list(cmd)),
     )
 
@@ -568,11 +568,11 @@ def test_ensure_chromium_installs_when_missing(
 ) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.chromium_installed",
+        "fao_impact_monitor.hydra.scrapling.chromium_installed",
         lambda: False,
     )
     monkeypatch.setattr(
-        "fao_impact_monitor.data_lake.scrapling.subprocess.run",
+        "fao_impact_monitor.hydra.scrapling.subprocess.run",
         lambda cmd, check: calls.append(list(cmd)),
     )
 

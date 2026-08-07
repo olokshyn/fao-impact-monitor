@@ -31,7 +31,7 @@
             "request": "launch",
             "module": "pytest",
             "args": [
-                "tests/data_lake/test_scrapling.py::test_reliable_fetch_fao_bitstream_download_returns_pdf",
+                "tests/hydra/test_scrapling.py::test_reliable_fetch_fao_bitstream_download_returns_pdf",
                 "-s",
                 "-vv"
             ],
