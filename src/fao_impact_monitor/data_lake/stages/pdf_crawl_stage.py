@@ -42,6 +42,12 @@ PIPELINE_FOR_PDF_PARAM = "pipeline_for_pdf"
 FetchFn = Callable[..., Awaitable[bytes]]
 ExtractFn = Callable[..., Awaitable[PdfPageExtract]]
 
+
+async def _reliable_fetch_url(*, url: str) -> bytes:
+    """Adapter so PdfCrawl's FetchFn stays ``url=``-kwargs based."""
+    return await reliable_fetch(url)
+
+
 ContentKind = Literal["pdf", "html", "other"]
 # Stack entry: (url, depth, inherited_title, title_ttl)
 StackEntry = tuple[str, int, str | None, int]
@@ -92,7 +98,7 @@ class PdfCrawlStage(Stage):
         chat_model: BaseChatModel | None = None,
         config: PdfCrawlConfig | None = None,
     ) -> None:
-        self._fetch_fn = fetch_fn or reliable_fetch
+        self._fetch_fn = fetch_fn or _reliable_fetch_url
         self._extract_fn = extract_fn
         self._chat_model = chat_model
         self._config = config

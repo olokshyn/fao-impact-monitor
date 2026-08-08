@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from curl_cffi.curl import CurlError
+from pydantic import BaseModel, Field
 from scrapling.fetchers import AsyncFetcher
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,61 @@ HTML_MAGIC_BYTES = b"<!doctype"
 _MIN_USEFUL_HTTP_BODY_BYTES = 512
 
 BodyCaptureMode = Literal["raw", "rendered"]
+
+
+class AsyncFetchParams(BaseModel):
+    """Parameters for Scrapling ``AsyncFetcher`` (timeout in seconds)."""
+
+    timeout: int = 30
+    retries: int = 3
+    stealthy_headers: bool = True
+    follow_redirects: bool | Literal["safe"] = True
+    retry_delay: int = 2
+
+
+class BrowserFetchParams(BaseModel):
+    """Parameters for Scrapling ``StealthyFetcher`` (timeout in milliseconds)."""
+
+    timeout: int = 30_000
+    retries: int = 3
+    headless: bool = True
+    disable_resources: bool = False
+    network_idle: bool = True
+    solve_cloudflare: bool = True
+    body_mode: BodyCaptureMode = "raw"
+
+
+class ReliableFetchParams(BaseModel):
+    """Parameters for HTTP-then-browser ``reliable_fetch``."""
+
+    fetch_params: AsyncFetchParams = Field(default_factory=AsyncFetchParams)
+    browser_fetch_params: BrowserFetchParams = Field(default_factory=BrowserFetchParams)
+
+
+class ScraplingFetchResult(BaseModel):
+    """Metadata + body from a successful scrapling fetch path."""
+
+    fetcher: Literal["async", "stealthy"]
+    fetcher_params: dict[str, Any] = Field(default_factory=dict)
+    request_url: str
+    request_headers: dict[str, Any] = Field(default_factory=dict)
+    request_params: dict[str, Any] = Field(default_factory=dict)
+    status_code: int
+    response_headers: dict[str, Any] = Field(default_factory=dict)
+    body: bytes
+
+
+def _mapping_to_dict(value: Any) -> dict[str, Any]:
+    """Best-effort conversion of header/param mappings to plain dicts."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    try:
+        return {str(k): v for k, v in dict(value).items()}
+    except (TypeError, ValueError):
+        return {}
+
 
 # browserforge header data often lags Playwright's bundled Chrome version.
 _MAX_BROWSERFORGE_CHROME_VERSION = 143
@@ -234,32 +290,44 @@ def _stealthy_fetcher() -> Any:
         return StealthyFetcher
 
 
-async def fetch(
-    *,
+async def fetch_with_meta(
     url: str,
-    stealthy_headers: bool = True,
-    follow_redirects: bool | Literal["safe"] = True,
-    timeout: int = 30,
-    retries: int = 3,
-    retry_delay: int = 2,
-) -> bytes:
-    """Fetch ``url`` with Scrapling ``AsyncFetcher`` and return the response body."""
-    logger.info("HTTP fetch %s (timeout=%ss, retries=%s)", url, timeout, retries)
+    params: AsyncFetchParams | None = None,
+) -> ScraplingFetchResult:
+    """Fetch ``url`` with Scrapling ``AsyncFetcher`` and return body + metadata."""
+    params = params or AsyncFetchParams()
+    fetcher_params = params.model_dump()
+    logger.info(
+        "HTTP fetch %s (timeout=%ss, retries=%s)",
+        url,
+        params.timeout,
+        params.retries,
+    )
     try:
-        response = await AsyncFetcher.get(
-            url,
-            stealthy_headers=stealthy_headers,
-            follow_redirects=follow_redirects,
-            timeout=timeout,
-            retries=retries,
-            retry_delay=retry_delay,
-        )
+        response = await AsyncFetcher.get(url, **fetcher_params)
     except CurlError:
         logger.warning("HTTP fetch failed for %s", url, exc_info=True)
         raise
     body = _as_bytes(response.body)
+    request_url = str(getattr(response, "url", None) or url)
+    status = getattr(response, "status", None)
+    status_code = int(status) if status is not None else 200
     logger.debug("HTTP fetch succeeded for %s (%s bytes)", url, len(body))
-    return body
+    return ScraplingFetchResult(
+        fetcher="async",
+        fetcher_params=fetcher_params,
+        request_url=request_url,
+        request_headers=_mapping_to_dict(getattr(response, "request_headers", None)),
+        request_params={},
+        status_code=status_code,
+        response_headers=_mapping_to_dict(getattr(response, "headers", None)),
+        body=body,
+    )
+
+
+async def fetch(url: str, params: AsyncFetchParams | None = None) -> bytes:
+    """Fetch ``url`` with Scrapling ``AsyncFetcher`` and return the response body."""
+    return (await fetch_with_meta(url, params)).body
 
 
 def _browser_errors() -> tuple[type[BaseException], ...]:
@@ -416,18 +484,11 @@ async def _capture_rendered_html(page: Any) -> bytes:
     return str(html).encode("utf-8")
 
 
-async def browser_fetch(
-    *,
+async def browser_fetch_with_meta(
     url: str,
-    headless: bool = True,
-    disable_resources: bool = False,
-    network_idle: bool = True,
-    solve_cloudflare: bool = True,
-    timeout: int = 30_000,
-    retries: int = 3,
-    body_mode: BodyCaptureMode = "raw",
-) -> bytes:
-    """Fetch ``url`` with Scrapling ``StealthyFetcher`` and return the response body.
+    params: BrowserFetchParams | None = None,
+) -> ScraplingFetchResult:
+    """Fetch ``url`` with Scrapling ``StealthyFetcher`` and return body + metadata.
 
     ``body_mode="raw"`` captures network response bodies during navigation (so
     ``application/pdf`` bytes are kept before Chrome replaces them with its PDF
@@ -436,24 +497,28 @@ async def browser_fetch(
 
     ``body_mode="rendered"`` returns ``page.content()`` after the DOM settles —
     needed for SPA shells where useful markup only appears after JS runs.
+
+    When only raw bytes are captured (no Playwright response object),
+    ``status_code`` is ``200`` if a useful body was obtained.
     """
+    params = params or BrowserFetchParams()
     logger.info(
         "Browser fetch %s (timeout=%sms, retries=%s, solve_cloudflare=%s, body_mode=%s)",
         url,
-        timeout,
-        retries,
-        solve_cloudflare,
-        body_mode,
+        params.timeout,
+        params.retries,
+        params.solve_cloudflare,
+        params.body_mode,
     )
     # sync_playwright cannot run inside an active asyncio loop
     await asyncio.to_thread(ensure_chromium)
     stealthy_fetcher = _stealthy_fetcher()
-    captured: dict[str, bytes] = {}
+    captured: dict[str, Any] = {}
     network_tasks: list[asyncio.Task[None]] = []
 
     async def page_setup(page: Any) -> None:
         """Register listeners before navigation so PDF bytes are not re-downloaded."""
-        if body_mode != "raw":
+        if params.body_mode != "raw":
             return
         on = getattr(page, "on", None)
         if on is None:
@@ -477,9 +542,16 @@ async def browser_fetch(
                 # /bitstreams/ URLs, which must not win the capture.
                 if not body.startswith(PDF_MAGIC_BYTES):
                     return
-                captured["network_body"] = _prefer_network_capture(
-                    captured.get("network_body"),
-                    body,
+                previous = captured.get("network_body")
+                if isinstance(previous, bytes):
+                    body = _prefer_network_capture(previous, body)
+                captured["network_body"] = body
+                captured["network_url"] = str(getattr(response, "url", "") or url)
+                status = getattr(response, "status", None)
+                if status is not None:
+                    captured["network_status"] = int(status)
+                captured["network_headers"] = _mapping_to_dict(
+                    getattr(response, "headers", None)
                 )
 
             network_tasks.append(asyncio.create_task(_read()))
@@ -493,7 +565,9 @@ async def browser_fetch(
                 network_tasks.clear()
 
         await _drain_network_tasks()
-        if body_mode == "rendered":
+        page_url = str(getattr(page, "url", "") or url)
+        captured["page_url"] = page_url
+        if params.body_mode == "rendered":
             captured["body"] = await _capture_rendered_html(page)
         else:
             # SPA download pages may request PDF bytes after JS boots; wait briefly.
@@ -501,7 +575,7 @@ async def browser_fetch(
                 wait_for_timeout = getattr(page, "wait_for_timeout", None)
                 for _ in range(20):
                     network_body = captured.get("network_body")
-                    if network_body is not None and network_body.startswith(
+                    if isinstance(network_body, bytes) and network_body.startswith(
                         PDF_MAGIC_BYTES
                     ):
                         break
@@ -510,7 +584,9 @@ async def browser_fetch(
                         break
                     await wait_for_timeout(250)
             network_body = captured.get("network_body")
-            if network_body is not None and network_body.startswith(PDF_MAGIC_BYTES):
+            if isinstance(network_body, bytes) and network_body.startswith(
+                PDF_MAGIC_BYTES
+            ):
                 logger.debug(
                     "Using network-captured PDF for %s (%s bytes)",
                     url,
@@ -519,21 +595,26 @@ async def browser_fetch(
                 captured["body"] = network_body
             else:
                 captured["body"] = await _capture_final_body(page, navigate_url=url)
+                captured["page_url"] = str(getattr(page, "url", "") or page_url)
         return page
 
     async def _fetch(*, with_cloudflare: bool) -> bytes:
         captured.pop("body", None)
         captured.pop("network_body", None)
+        captured.pop("network_url", None)
+        captured.pop("network_status", None)
+        captured.pop("network_headers", None)
+        captured.pop("page_url", None)
         network_tasks.clear()
         try:
             await stealthy_fetcher.async_fetch(
                 url,
-                headless=headless,
-                disable_resources=disable_resources,
-                network_idle=network_idle,
+                headless=params.headless,
+                disable_resources=params.disable_resources,
+                network_idle=params.network_idle,
                 solve_cloudflare=with_cloudflare,
-                timeout=timeout,
-                retries=retries,
+                timeout=params.timeout,
+                retries=params.retries,
                 page_setup=page_setup,
                 page_action=page_action,
             )
@@ -542,14 +623,18 @@ async def browser_fetch(
             # navigations even after we already captured the body.
             if "body" not in captured:
                 raise
-        return captured["body"]
+        body = captured["body"]
+        if not isinstance(body, bytes):
+            raise TypeError("Browser fetch captured a non-bytes body")
+        return body
 
+    used_cloudflare = params.solve_cloudflare
     try:
-        body = await _fetch(with_cloudflare=solve_cloudflare)
+        body = await _fetch(with_cloudflare=params.solve_cloudflare)
     except _BROWSER_ERRORS:
         # Cloudflare detection itself calls page.content() and races with SPAs
         # (e.g. YouTube). Retry once without the solver if we asked for it.
-        if not solve_cloudflare:
+        if not params.solve_cloudflare:
             logger.warning("Browser fetch failed for %s", url, exc_info=True)
             raise
         logger.warning(
@@ -557,26 +642,41 @@ async def browser_fetch(
             url,
             exc_info=True,
         )
+        used_cloudflare = False
         body = await _fetch(with_cloudflare=False)
 
+    if not body:
+        raise RuntimeError(f"Browser fetch returned empty body for {url}")
+
+    request_url = str(captured.get("network_url") or captured.get("page_url") or url)
+    status_code = int(captured.get("network_status") or 200)
+    response_headers = _mapping_to_dict(captured.get("network_headers"))
     logger.debug("Browser fetch succeeded for %s (%s bytes)", url, len(body))
-    return body
+    result_params = params.model_copy(update={"solve_cloudflare": used_cloudflare})
+    return ScraplingFetchResult(
+        fetcher="stealthy",
+        fetcher_params=result_params.model_dump(),
+        request_url=request_url,
+        request_headers={},
+        request_params={},
+        status_code=status_code,
+        response_headers=response_headers,
+        body=body,
+    )
 
 
-async def reliable_fetch(
-    *,
+async def browser_fetch(
     url: str,
-    timeout: int = 30,
-    stealthy_headers: bool = True,
-    follow_redirects: bool | Literal["safe"] = True,
-    fetch_retries: int = 3,
-    retry_delay: int = 2,
-    headless: bool = True,
-    disable_resources: bool = False,
-    network_idle: bool = True,
-    solve_cloudflare: bool = True,
-    browser_retries: int = 3,
+    params: BrowserFetchParams | None = None,
 ) -> bytes:
+    """Fetch ``url`` with Scrapling ``StealthyFetcher`` and return the body."""
+    return (await browser_fetch_with_meta(url, params)).body
+
+
+async def reliable_fetch_with_meta(
+    url: str,
+    params: ReliableFetchParams | None = None,
+) -> ScraplingFetchResult:
     """Fetch ``url`` with ``fetch``, falling back to ``browser_fetch`` when needed.
 
     Falls back to the browser when:
@@ -590,22 +690,13 @@ async def reliable_fetch(
     returned — except for bitstream/PDF download URLs, which use ``body_mode="raw"``
     so Chrome's PDF viewer HTML is not returned. Transport failures and useless /
     PDF-viewer bodies keep ``body_mode="raw"``.
-
-    ``timeout`` is in seconds (same as ``fetch``) and is converted to milliseconds
-    for ``browser_fetch``.
     """
+    params = params or ReliableFetchParams()
     logger.info("Reliable fetch %s (HTTP then browser fallback)", url)
     api_content_url = _fao_bitstream_api_content_url(url)
     if api_content_url is not None:
         try:
-            api_body = await fetch(
-                url=api_content_url,
-                stealthy_headers=stealthy_headers,
-                follow_redirects=follow_redirects,
-                timeout=timeout,
-                retries=fetch_retries,
-                retry_delay=retry_delay,
-            )
+            api_result = await fetch_with_meta(api_content_url, params.fetch_params)
         except CurlError as exc:
             logger.warning(
                 "FAO bitstream API fetch failed for %s (%s); trying viewer URL",
@@ -613,46 +704,34 @@ async def reliable_fetch(
                 exc,
             )
         else:
-            if api_body.startswith(PDF_MAGIC_BYTES):
+            if api_result.body.startswith(PDF_MAGIC_BYTES):
                 logger.info(
                     "FAO bitstream API returned PDF for %s (%s bytes)",
                     api_content_url,
-                    len(api_body),
+                    len(api_result.body),
                 )
-                return api_body
+                return api_result
             logger.info(
                 "FAO bitstream API did not return PDF for %s (%s bytes); "
                 "trying viewer URL",
                 api_content_url,
-                len(api_body),
+                len(api_result.body),
             )
 
     try:
-        body = await fetch(
-            url=url,
-            stealthy_headers=stealthy_headers,
-            follow_redirects=follow_redirects,
-            timeout=timeout,
-            retries=fetch_retries,
-            retry_delay=retry_delay,
-        )
+        result = await fetch_with_meta(url, params.fetch_params)
     except CurlError as exc:
         logger.warning(
             "HTTP fetch failed for %s (%s); falling back to browser",
             url,
             exc,
         )
-        return await browser_fetch(
-            url=url,
-            headless=headless,
-            disable_resources=disable_resources,
-            network_idle=network_idle,
-            solve_cloudflare=solve_cloudflare,
-            timeout=timeout * 1000,
-            retries=browser_retries,
-            body_mode="raw",
+        return await browser_fetch_with_meta(
+            url,
+            params.browser_fetch_params.model_copy(update={"body_mode": "raw"}),
         )
 
+    body = result.body
     spa_shell = looks_like_spa_shell(body)
     useless = looks_like_useless_http_body(body)
     if spa_shell and _url_looks_like_binary_download(url):
@@ -661,15 +740,9 @@ async def reliable_fetch(
             url,
             len(body),
         )
-        return await browser_fetch(
-            url=url,
-            headless=headless,
-            disable_resources=disable_resources,
-            network_idle=network_idle,
-            solve_cloudflare=solve_cloudflare,
-            timeout=timeout * 1000,
-            retries=browser_retries,
-            body_mode="raw",
+        return await browser_fetch_with_meta(
+            url,
+            params.browser_fetch_params.model_copy(update={"body_mode": "raw"}),
         )
     if spa_shell:
         logger.info(
@@ -677,15 +750,9 @@ async def reliable_fetch(
             url,
             len(body),
         )
-        return await browser_fetch(
-            url=url,
-            headless=headless,
-            disable_resources=disable_resources,
-            network_idle=network_idle,
-            solve_cloudflare=solve_cloudflare,
-            timeout=timeout * 1000,
-            retries=browser_retries,
-            body_mode="rendered",
+        return await browser_fetch_with_meta(
+            url,
+            params.browser_fetch_params.model_copy(update={"body_mode": "rendered"}),
         )
     if useless:
         logger.info(
@@ -694,14 +761,16 @@ async def reliable_fetch(
             url,
             len(body),
         )
-        return await browser_fetch(
-            url=url,
-            headless=headless,
-            disable_resources=disable_resources,
-            network_idle=network_idle,
-            solve_cloudflare=solve_cloudflare,
-            timeout=timeout * 1000,
-            retries=browser_retries,
-            body_mode="raw",
+        return await browser_fetch_with_meta(
+            url,
+            params.browser_fetch_params.model_copy(update={"body_mode": "raw"}),
         )
-    return body
+    return result
+
+
+async def reliable_fetch(
+    url: str,
+    params: ReliableFetchParams | None = None,
+) -> bytes:
+    """Fetch ``url`` with ``fetch``, falling back to ``browser_fetch`` when needed."""
+    return (await reliable_fetch_with_meta(url, params)).body

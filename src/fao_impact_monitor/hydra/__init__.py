@@ -6,7 +6,7 @@ from typing import Any
 
 from beanie import init_beanie
 
-from fao_impact_monitor.hydra.config import HydraConfig
+from fao_impact_monitor.hydra.config import FetchConfig, HydraConfig
 from fao_impact_monitor.hydra.document.document import (
     Document,
     DocumentType,
@@ -20,6 +20,14 @@ from fao_impact_monitor.hydra.executor import (
     sweep_stale_executors,
 )
 from fao_impact_monitor.hydra.run import Run
+from fao_impact_monitor.hydra.stage.fetch_stage import (
+    ContentType,
+    Fetch,
+    FetchRequest,
+    FetchResponse,
+    FetchStage,
+    FetchStageResult,
+)
 from fao_impact_monitor.hydra.stage.stage import (
     Stage,
     StageResult,
@@ -41,6 +49,7 @@ HYDRA_DOCUMENT_MODELS: list[type[Any]] = [
     Workflow,
     Run,
     ExecutorHeartbeat,
+    Fetch,
 ]
 
 
@@ -67,10 +76,17 @@ async def init_hydra_beanie(
 
 __all__ = [
     "HYDRA_DOCUMENT_MODELS",
+    "ContentType",
     "Document",
     "DocumentType",
     "Executor",
     "ExecutorHeartbeat",
+    "Fetch",
+    "FetchConfig",
+    "FetchRequest",
+    "FetchResponse",
+    "FetchStage",
+    "FetchStageResult",
     "HydraConfig",
     "Relation",
     "RelationSide",

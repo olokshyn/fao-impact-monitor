@@ -8,6 +8,10 @@ from curl_cffi.curl import CurlError
 from fao_impact_monitor.hydra.scrapling import (
     HTML_MAGIC_BYTES,
     PDF_MAGIC_BYTES,
+    AsyncFetchParams,
+    BrowserFetchParams,
+    ReliableFetchParams,
+    ScraplingFetchResult,
     _fao_bitstream_api_content_url,
     browser_fetch,
     ensure_chromium,
@@ -16,6 +20,31 @@ from fao_impact_monitor.hydra.scrapling import (
     looks_like_useless_http_body,
     reliable_fetch,
 )
+
+
+def _async_meta(
+    body: bytes, *, url: str = "https://example.com/"
+) -> ScraplingFetchResult:
+    return ScraplingFetchResult(
+        fetcher="async",
+        fetcher_params={},
+        request_url=url,
+        status_code=200,
+        body=body,
+    )
+
+
+def _stealthy_meta(
+    body: bytes, *, url: str = "https://example.com/"
+) -> ScraplingFetchResult:
+    return ScraplingFetchResult(
+        fetcher="stealthy",
+        fetcher_params={},
+        request_url=url,
+        status_code=200,
+        body=body,
+    )
+
 
 FAO_SPA_SHELL = b"""<!DOCTYPE html>
 <html>
@@ -58,7 +87,9 @@ def test_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
         get,
     )
 
-    body = asyncio.run(fetch(url="https://example.com/doc.pdf", timeout=10, retries=1))
+    body = asyncio.run(
+        fetch("https://example.com/doc.pdf", AsyncFetchParams(timeout=10, retries=1))
+    )
 
     assert body == b"%PDF-1.4 content"
     get.assert_awaited_once_with(
@@ -78,7 +109,7 @@ def test_fetch_encodes_string_body(monkeypatch: pytest.MonkeyPatch) -> None:
         get,
     )
 
-    body = asyncio.run(fetch(url="https://example.com/"))
+    body = asyncio.run(fetch("https://example.com/"))
 
     assert body == b"<html/>"
 
@@ -117,9 +148,8 @@ def test_browser_fetch_returns_response_body(monkeypatch: pytest.MonkeyPatch) ->
 
     body = asyncio.run(
         browser_fetch(
-            url="https://example.com/protected",
-            timeout=60_000,
-            retries=2,
+            "https://example.com/protected",
+            BrowserFetchParams(timeout=60_000, retries=2),
         )
     )
 
@@ -188,9 +218,8 @@ def test_browser_fetch_uses_network_captured_pdf(
 
     body = asyncio.run(
         browser_fetch(
-            url="https://example.com/doc.pdf",
-            solve_cloudflare=False,
-            retries=1,
+            "https://example.com/doc.pdf",
+            BrowserFetchParams(solve_cloudflare=False, retries=1),
         )
     )
 
@@ -240,21 +269,29 @@ def test_looks_like_useless_http_body() -> None:
 def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch_mock = AsyncMock(return_value=CHROME_PDF_VIEWER_SHELL)
-    browser_mock = AsyncMock(return_value=b"%PDF-1.4 real-bytes")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    fetch_mock = AsyncMock(
+        return_value=_async_meta(CHROME_PDF_VIEWER_SHELL, url=FAO_PDF_URL_2)
+    )
+    browser_mock = AsyncMock(
+        return_value=_stealthy_meta(b"%PDF-1.4 real-bytes", url=FAO_PDF_URL_2)
+    )
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url=FAO_PDF_URL_2,
-            timeout=15,
-            fetch_retries=1,
-            solve_cloudflare=False,
-            browser_retries=2,
+            FAO_PDF_URL_2,
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=15, retries=1),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000, solve_cloudflare=False, retries=2
+                ),
+            ),
         )
     )
 
@@ -262,14 +299,16 @@ def test_reliable_fetch_uses_browser_raw_for_pdf_viewer_shell(
     # API content URL is tried first; viewer URL still falls back to browser.
     assert fetch_mock.await_count == 2
     browser_mock.assert_awaited_once_with(
-        url=FAO_PDF_URL_2,
-        headless=True,
-        disable_resources=False,
-        network_idle=True,
-        solve_cloudflare=False,
-        timeout=15_000,
-        retries=2,
-        body_mode="raw",
+        FAO_PDF_URL_2,
+        BrowserFetchParams(
+            headless=True,
+            disable_resources=False,
+            network_idle=True,
+            solve_cloudflare=False,
+            timeout=15_000,
+            retries=2,
+            body_mode="raw",
+        ),
     )
 
 
@@ -277,35 +316,42 @@ def test_reliable_fetch_uses_fao_bitstream_api_content_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pdf_bytes = b"%PDF-1.7 from-api"
-    fetch_mock = AsyncMock(return_value=pdf_bytes)
-    browser_mock = AsyncMock(return_value=b"unused")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    api_url = (
+        "https://openknowledge.fao.org/server/api/core/bitstreams/"
+        "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+    )
+    fetch_mock = AsyncMock(return_value=_async_meta(pdf_bytes, url=api_url))
+    browser_mock = AsyncMock(return_value=_stealthy_meta(b"unused"))
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url=FAO_PDF_URL_2,
-            timeout=15,
-            fetch_retries=1,
-            solve_cloudflare=False,
-            browser_retries=2,
+            FAO_PDF_URL_2,
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=15, retries=1),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000, solve_cloudflare=False, retries=2
+                ),
+            ),
         )
     )
 
     assert body == pdf_bytes
     fetch_mock.assert_awaited_once_with(
-        url=(
-            "https://openknowledge.fao.org/server/api/core/bitstreams/"
-            "c1caede2-ea98-46b0-b663-4cae429e05d3/content"
+        api_url,
+        AsyncFetchParams(
+            stealthy_headers=True,
+            follow_redirects=True,
+            timeout=15,
+            retries=1,
+            retry_delay=2,
         ),
-        stealthy_headers=True,
-        follow_redirects=True,
-        timeout=15,
-        retries=1,
-        retry_delay=2,
     )
     browser_mock.assert_not_awaited()
 
@@ -352,10 +398,8 @@ def test_browser_fetch_rendered_returns_page_content(
 
     body = asyncio.run(
         browser_fetch(
-            url="https://example.com/spa",
-            body_mode="rendered",
-            solve_cloudflare=False,
-            retries=1,
+            "https://example.com/spa",
+            BrowserFetchParams(body_mode="rendered", solve_cloudflare=False, retries=1),
         )
     )
     assert b'href="/x"' in body or b"href='/x'" in body
@@ -364,38 +408,51 @@ def test_browser_fetch_rendered_returns_page_content(
 def test_reliable_fetch_uses_fetch_when_successful(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch_mock = AsyncMock(return_value=b"http-body" + b"x" * 600)
-    browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    fetch_mock = AsyncMock(
+        return_value=_async_meta(b"http-body" + b"x" * 600, url="https://example.com/")
+    )
+    browser_mock = AsyncMock(return_value=_stealthy_meta(b"browser-body"))
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url="https://example.com/",
-            timeout=15,
-            fetch_retries=1,
-            retry_delay=1,
-            stealthy_headers=False,
-            follow_redirects="safe",
-            headless=False,
-            disable_resources=True,
-            network_idle=False,
-            solve_cloudflare=False,
-            browser_retries=2,
+            "https://example.com/",
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(
+                    timeout=15,
+                    stealthy_headers=False,
+                    follow_redirects="safe",
+                    retries=1,
+                    retry_delay=1,
+                ),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000,
+                    headless=False,
+                    disable_resources=True,
+                    network_idle=False,
+                    solve_cloudflare=False,
+                    retries=2,
+                ),
+            ),
         )
     )
 
     assert body.startswith(b"http-body")
     fetch_mock.assert_awaited_once_with(
-        url="https://example.com/",
-        stealthy_headers=False,
-        follow_redirects="safe",
-        timeout=15,
-        retries=1,
-        retry_delay=1,
+        "https://example.com/",
+        AsyncFetchParams(
+            stealthy_headers=False,
+            follow_redirects="safe",
+            timeout=15,
+            retries=1,
+            retry_delay=1,
+        ),
     )
     browser_mock.assert_not_awaited()
 
@@ -404,97 +461,131 @@ def test_reliable_fetch_uses_browser_on_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fetch_mock = AsyncMock(side_effect=CurlError("network down"))
-    browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    browser_mock = AsyncMock(
+        return_value=_stealthy_meta(
+            b"browser-body", url="https://example.com/protected"
+        )
+    )
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url="https://example.com/protected",
-            timeout=15,
-            fetch_retries=1,
-            retry_delay=1,
-            stealthy_headers=False,
-            follow_redirects=False,
-            headless=False,
-            disable_resources=True,
-            network_idle=False,
-            solve_cloudflare=False,
-            browser_retries=2,
+            "https://example.com/protected",
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(
+                    timeout=15,
+                    stealthy_headers=False,
+                    follow_redirects=False,
+                    retries=1,
+                    retry_delay=1,
+                ),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000,
+                    headless=False,
+                    disable_resources=True,
+                    network_idle=False,
+                    solve_cloudflare=False,
+                    retries=2,
+                ),
+            ),
         )
     )
 
     assert body == b"browser-body"
     fetch_mock.assert_awaited_once()
     browser_mock.assert_awaited_once_with(
-        url="https://example.com/protected",
-        headless=False,
-        disable_resources=True,
-        network_idle=False,
-        solve_cloudflare=False,
-        timeout=15_000,
-        retries=2,
-        body_mode="raw",
+        "https://example.com/protected",
+        BrowserFetchParams(
+            headless=False,
+            disable_resources=True,
+            network_idle=False,
+            solve_cloudflare=False,
+            timeout=15_000,
+            retries=2,
+            body_mode="raw",
+        ),
     )
 
 
 def test_reliable_fetch_uses_browser_for_spa_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch_mock = AsyncMock(return_value=FAO_SPA_SHELL)
-    browser_mock = AsyncMock(
-        return_value=b"<html><body><a href='/pub.pdf'>PDF</a></body></html>"
+    fetch_mock = AsyncMock(
+        return_value=_async_meta(
+            FAO_SPA_SHELL, url="https://openknowledge.fao.org/search"
+        )
     )
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    browser_mock = AsyncMock(
+        return_value=_stealthy_meta(
+            b"<html><body><a href='/pub.pdf'>PDF</a></body></html>",
+            url="https://openknowledge.fao.org/search",
+        )
+    )
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url="https://openknowledge.fao.org/search",
-            timeout=15,
-            fetch_retries=1,
-            solve_cloudflare=False,
-            browser_retries=2,
+            "https://openknowledge.fao.org/search",
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=15, retries=1),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000, solve_cloudflare=False, retries=2
+                ),
+            ),
         )
     )
 
     assert b"/pub.pdf" in body
     browser_mock.assert_awaited_once_with(
-        url="https://openknowledge.fao.org/search",
-        headless=True,
-        disable_resources=False,
-        network_idle=True,
-        solve_cloudflare=False,
-        timeout=15_000,
-        retries=2,
-        body_mode="rendered",
+        "https://openknowledge.fao.org/search",
+        BrowserFetchParams(
+            headless=True,
+            disable_resources=False,
+            network_idle=True,
+            solve_cloudflare=False,
+            timeout=15_000,
+            retries=2,
+            body_mode="rendered",
+        ),
     )
 
 
 def test_reliable_fetch_spa_shell_on_download_url_uses_raw(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fetch_mock = AsyncMock(return_value=FAO_SPA_SHELL)
-    browser_mock = AsyncMock(return_value=b"%PDF-1.7 raw-bytes")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    fetch_mock = AsyncMock(return_value=_async_meta(FAO_SPA_SHELL, url=FAO_PDF_URL_2))
+    browser_mock = AsyncMock(
+        return_value=_stealthy_meta(b"%PDF-1.7 raw-bytes", url=FAO_PDF_URL_2)
+    )
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     body = asyncio.run(
         reliable_fetch(
-            url=FAO_PDF_URL_2,
-            timeout=15,
-            fetch_retries=1,
-            solve_cloudflare=False,
-            browser_retries=2,
+            FAO_PDF_URL_2,
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=15, retries=1),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=15000, solve_cloudflare=False, retries=2
+                ),
+            ),
         )
     )
 
@@ -502,14 +593,16 @@ def test_reliable_fetch_spa_shell_on_download_url_uses_raw(
     # API content URL + viewer URL both return the SPA shell mock.
     assert fetch_mock.await_count == 2
     browser_mock.assert_awaited_once_with(
-        url=FAO_PDF_URL_2,
-        headless=True,
-        disable_resources=False,
-        network_idle=True,
-        solve_cloudflare=False,
-        timeout=15_000,
-        retries=2,
-        body_mode="raw",
+        FAO_PDF_URL_2,
+        BrowserFetchParams(
+            headless=True,
+            disable_resources=False,
+            network_idle=True,
+            solve_cloudflare=False,
+            timeout=15_000,
+            retries=2,
+            body_mode="raw",
+        ),
     )
 
 
@@ -517,15 +610,17 @@ def test_reliable_fetch_does_not_fallback_on_non_http_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fetch_mock = AsyncMock(side_effect=ValueError("bad url"))
-    browser_mock = AsyncMock(return_value=b"browser-body")
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
+    browser_mock = AsyncMock(return_value=_stealthy_meta(b"browser-body"))
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     with pytest.raises(ValueError, match="bad url"):
-        asyncio.run(reliable_fetch(url="https://example.com/"))
+        asyncio.run(reliable_fetch("https://example.com/"))
 
     browser_mock.assert_not_awaited()
 
@@ -535,14 +630,16 @@ def test_reliable_fetch_propagates_browser_error(
 ) -> None:
     fetch_mock = AsyncMock(side_effect=CurlError("network down"))
     browser_mock = AsyncMock(side_effect=RuntimeError("browser failed"))
-    monkeypatch.setattr("fao_impact_monitor.hydra.scrapling.fetch", fetch_mock)
     monkeypatch.setattr(
-        "fao_impact_monitor.hydra.scrapling.browser_fetch",
+        "fao_impact_monitor.hydra.scrapling.fetch_with_meta", fetch_mock
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.hydra.scrapling.browser_fetch_with_meta",
         browser_mock,
     )
 
     with pytest.raises(RuntimeError, match="browser failed"):
-        asyncio.run(reliable_fetch(url="https://example.com/"))
+        asyncio.run(reliable_fetch("https://example.com/"))
 
 
 def test_ensure_chromium_skips_when_installed(
@@ -586,9 +683,7 @@ def test_ensure_chromium_installs_when_missing(
 def test_browser_fetch_fao_pdf_follows_redirect() -> None:
     body = asyncio.run(
         browser_fetch(
-            url=FAO_PDF_URL_1,
-            timeout=90_000,
-            solve_cloudflare=False,
+            FAO_PDF_URL_1, BrowserFetchParams(timeout=90_000, solve_cloudflare=False)
         )
     )
 
@@ -601,11 +696,13 @@ def test_reliable_fetch_fao_bitstream_download_returns_pdf() -> None:
     """Bitstream /download URLs must yield PDF bytes, not a PDF-viewer HTML shell."""
     body = asyncio.run(
         reliable_fetch(
-            url=FAO_PDF_URL_2,
-            timeout=90,
-            fetch_retries=2,
-            browser_retries=2,
-            solve_cloudflare=False,
+            FAO_PDF_URL_2,
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=90, retries=2),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=90000, solve_cloudflare=False, retries=2
+                ),
+            ),
         )
     )
 
@@ -615,7 +712,7 @@ def test_reliable_fetch_fao_bitstream_download_returns_pdf() -> None:
 
 @pytest.mark.integration
 def test_fetch_fao_news_html_page() -> None:
-    body = asyncio.run(fetch(url=FAO_NEWS_URL, timeout=60))
+    body = asyncio.run(fetch(FAO_NEWS_URL, AsyncFetchParams(timeout=60)))
 
     assert body
     assert body.lstrip().lower().startswith(HTML_MAGIC_BYTES)
@@ -628,11 +725,13 @@ def test_fetch_fao_news_html_page() -> None:
 def test_browser_fetch_youtube_protected_page() -> None:
     body = asyncio.run(
         browser_fetch(
-            url=YOUTUBE_URL,
-            timeout=90_000,
-            # YouTube isn't Cloudflare-protected; the solver's page.content()
-            # races with client-side navigations (themeRefresh, etc.).
-            solve_cloudflare=False,
+            YOUTUBE_URL,
+            BrowserFetchParams(
+                timeout=90_000,
+                # YouTube isn't Cloudflare-protected; the solver's page.content()
+                # races with client-side navigations (themeRefresh, etc.).
+                solve_cloudflare=False,
+            ),
         )
     )
 
@@ -650,18 +749,19 @@ def test_browser_fetch_youtube_protected_page() -> None:
 )
 def test_reliable_fetch_youtube_falls_back_when_http_fails() -> None:
     with pytest.raises(CurlError):
-        asyncio.run(fetch(url=YOUTUBE_URL, timeout=5, retries=1, retry_delay=1))
+        asyncio.run(
+            fetch(YOUTUBE_URL, AsyncFetchParams(timeout=5, retries=1, retry_delay=1))
+        )
 
     body = asyncio.run(
         reliable_fetch(
-            url=YOUTUBE_URL,
-            timeout=30,
-            fetch_retries=1,
-            retry_delay=1,
-            browser_retries=1,
-            # YouTube isn't Cloudflare-protected; the solver's page.content()
-            # races with client-side navigations (themeRefresh, etc.).
-            solve_cloudflare=False,
+            YOUTUBE_URL,
+            ReliableFetchParams(
+                fetch_params=AsyncFetchParams(timeout=30, retries=1, retry_delay=1),
+                browser_fetch_params=BrowserFetchParams(
+                    timeout=30000, solve_cloudflare=False, retries=1
+                ),
+            ),
         )
     )
 

@@ -126,6 +126,8 @@ Inside `process`, the stage loads or creates the `Document` from the `Task` (`do
 
 **Previous stage results.** The `Stage` can read the results of upstream stages that it depends on from `Document.stage_results`. When a `Stage` needs prior results, pass `Workflow.name` and `WorkflowNode.name` through `stage_params` (`params`).
 
+**Blob / file persistence.** Hydra is a distributed system: a `Stage` may run on a remote `Executor` whose local disk is temporary or ephemeral. Any Stage that writes blob files (PDF bodies, HTML, extracted text, etc.) **must** use [fsspec](https://filesystem-spec.readthedocs.io/) for I/O—not bare `open()` / `Path.write_bytes()` against an assumed machine-local path. Local runs may use a local filesystem via fsspec (plain relative paths or `file://`), but the root path **must** be configurable so it can later point at object storage (for example `s3://…`) without code changes. Paths stored in MongoDB should be relative to the process working directory (or otherwise portable), not absolute host-specific paths.
+
 ### Interface
 
 ```python
@@ -483,14 +485,15 @@ Unique compound index on `(url, source)`.
 
 Decisions not fixed by the architecture above, plus any deviations:
 
-1. **Collection names:** `tasks`, `executors`, `documents`, `workflows`, `runs`.
+1. **Collection names:** `tasks`, `executors`, `documents`, `workflows`, `runs`, `fetches`.
 2. **In-memory Mongo for tests:** Hydra tests use process-local `mongomock` via `mongomock_motor.AsyncMongoMockClient` on a dedicated DB name (`hydra_test`). They must not require a MongoDB server.
 3. **Sweeper API:** module-level `async def sweep_stale_executors(*, heartbeat_interval_minutes, stale_multiplier) -> list[str]` in `executor.py` (returns swept executor ids). Not a separate class.
-4. **`HydraConfig`** (`pydantic_settings.BaseSettings`, `env_prefix="HYDRA_"`): `max_attempts` (default 3), `heartbeat_interval_minutes` (5.0), `stale_multiplier` (3.0), `wait_poll_interval_seconds` (1.0), `claim_idle_sleep_seconds` (0.05). Class lives in `hydra/config.py` and is **not** instantiated there; the host app nests `Config.hydra: HydraConfig = Field(default_factory=HydraConfig)`.
+4. **`HydraConfig`** (`pydantic_settings.BaseSettings`, `env_prefix="HYDRA_"`): `max_attempts` (default 3), `heartbeat_interval_minutes` (5.0), `stale_multiplier` (3.0), `wait_poll_interval_seconds` (1.0), `claim_idle_sleep_seconds` (0.05), nested `fetch: FetchConfig` (`env_prefix="HYDRA_FETCH_"`, default `body_save_dir=fetched_data/fetch`). Class lives in `hydra/config.py` and is **not** instantiated there; the host app nests `Config.hydra: HydraConfig = Field(default_factory=HydraConfig)`.
 5. **`Status` enum:** shared `StrEnum` in `hydra/status.py` (`CREATED | SCHEDULED | RUNNING | RETRYING | COMPLETED | FAILED`), used by `Task`, `StageResult`, and `Run`.
-6. **`init_hydra_beanie`:** lives in `hydra/__init__.py` with optional `extra_models` for Document subclasses in tests.
-7. **No built-in Stages/Branches:** production Hydra ships only abstract `Stage` / `WorkflowBranch`; concrete test implementations live under `tests/hydra/`.
+6. **`init_hydra_beanie`:** lives in `hydra/__init__.py` with optional `extra_models` for Document subclasses in tests. Registers core models including `Fetch`.
+7. **Concrete Stages:** Hydra includes product stages such as `FetchStage` under `hydra/stage/`; abstract `Stage` / `WorkflowBranch` remain the extension points. Test-only stages/branches live under `tests/hydra/`.
 8. **Executor constructor:** takes plain kwargs (concurrency, max_attempts, …) rather than a `HydraConfig` instance so Hydra stays movable without importing the host app `Config`.
+9. **Blob I/O:** Stages write blobs via **fsspec**. Default save roots are relative to the process working directory (configurable for object storage later).
 
 ### Deviations
 
