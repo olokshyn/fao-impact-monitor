@@ -7,6 +7,7 @@ from beanie import Indexed
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 
 from fao_impact_monitor.hydra.run import Run
+from fao_impact_monitor.hydra.stage.stage import get_stage
 from fao_impact_monitor.hydra.status import Status
 from fao_impact_monitor.hydra.task.task import Task
 from fao_impact_monitor.hydra.workflow.workflow_node import WorkflowNode, _reject_dots
@@ -56,6 +57,27 @@ class Workflow(BeanieDocument):
                 f"No WorkflowNode named {name!r} in Workflow {self.name!r}"
             ) from exc
 
+    def _validate_task_context(self, task: Task) -> None:
+        """Ensure ``task.context`` has every key required by stages in this workflow."""
+        context = task.context or {}
+        missing: list[str] = []
+        for node in self.nodes:
+            stage = get_stage(node.stage_name)
+            required = type(stage).context_required
+            if not required:
+                continue
+            for key, reason in required.items():
+                if key not in context:
+                    missing.append(
+                        f"{key!r} (required by stage {stage.name!r} "
+                        f"on node {node.name!r}: {reason})"
+                    )
+        if missing:
+            raise ValueError(
+                "Task.context is missing required keys for Workflow "
+                f"{self.name!r}: " + "; ".join(missing)
+            )
+
     async def submit(self, task: Task) -> Run:
         """Accept a Task in CREATED state and enqueue work at entrypoints."""
         if self.id is None:
@@ -66,6 +88,8 @@ class Workflow(BeanieDocument):
             )
         if not self.entrypoints:
             raise ValueError(f"Workflow {self.name!r} has no entrypoints")
+
+        self._validate_task_context(task)
 
         run = Run(workflow_id=self.id, status=Status.SCHEDULED)
         await run.insert()

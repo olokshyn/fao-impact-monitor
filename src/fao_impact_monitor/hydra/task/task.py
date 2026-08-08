@@ -21,6 +21,7 @@ class Task(BeanieDocument):
     child_task_ids: list[PydanticObjectId] = Field(default_factory=list)
     status: Annotated[Status, Indexed()] = Status.CREATED
     stage_name: Annotated[str | None, Indexed()] = None
+    context: dict[str, Any] | None = None
     url: Annotated[str | None, Indexed()] = None
     source: Annotated[str | None, Indexed()] = None
     document_id: Annotated[PydanticObjectId | None, Indexed()] = None

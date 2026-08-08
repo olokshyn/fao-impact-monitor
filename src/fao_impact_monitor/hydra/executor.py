@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from beanie import Document as BeanieDocument
@@ -282,7 +282,7 @@ class Executor:
             return
 
         stage = get_stage(node.stage_name)
-        result = await stage.process(
+        result, child_context = await stage.process(
             task,
             node.stage_params,
             workflow.name,
@@ -309,7 +309,7 @@ class Executor:
         )
 
         if status == Status.COMPLETED:
-            await self._route_children(task, workflow, node, result)
+            await self._route_children(task, workflow, node, result, child_context)
 
     async def _route_children(
         self,
@@ -317,6 +317,7 @@ class Executor:
         workflow: Workflow,
         node: WorkflowNode,
         result: StageResult,
+        child_context: dict[str, Any] | None,
     ) -> None:
         from fao_impact_monitor.hydra.run import Run
 
@@ -351,6 +352,12 @@ class Executor:
                     child.source = task.source
                 if child.document_id is None:
                     child.document_id = task.document_id
+                if child_context is not None:
+                    child.context = dict(child_context)
+                elif task.context is not None:
+                    child.context = dict(task.context)
+                else:
+                    child.context = None
                 if child.status == Status.CREATED:
                     child.status = Status.SCHEDULED
                 await child.insert()

@@ -91,6 +91,11 @@ class NoopStageResult(StageResult):
     status: Status = Status.COMPLETED
 
 
+class BumpDepthStageResult(StageResult):
+    name: str = "bump_depth"
+    status: Status = Status.COMPLETED
+
+
 class FailNTimesStageResult(StageResult):
     name: str = "fail_n_times"
     status: Status = Status.COMPLETED
@@ -112,7 +117,7 @@ class IncrementStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         amount = int(params.get("amount", 1))
         doc = await _load_counter_doc(task)
         new_counter = await doc.inc_counter(amount)
@@ -124,7 +129,7 @@ class IncrementStage(Stage):
         await doc.push_stage_result(workflow_name, workflow_node_name, result)
         if task.document_id is None and doc.id is not None:
             await task.set_fields(document_id=doc.id)
-        return result
+        return result, None
 
 
 class AddValueStage(Stage):
@@ -138,7 +143,7 @@ class AddValueStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         amount = int(params["amount"])
         doc = await _load_counter_doc(task)
         new_value = await doc.inc_value(amount)
@@ -151,7 +156,7 @@ class AddValueStage(Stage):
         await doc.push_stage_result(workflow_name, workflow_node_name, result)
         if task.document_id is None and doc.id is not None:
             await task.set_fields(document_id=doc.id)
-        return result
+        return result, None
 
 
 class NoopStage(Stage):
@@ -163,8 +168,54 @@ class NoopStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
-        return NoopStageResult(name=self.name, status=Status.COMPLETED)
+    ) -> tuple[StageResult, dict[str, Any] | None]:
+        return NoopStageResult(name=self.name, status=Status.COMPLETED), None
+
+
+class BumpDepthStage(Stage):
+    """Complete and return context with depth incremented for children."""
+
+    name = "bump_depth"
+
+    async def process(
+        self,
+        task: Task,
+        params: dict[str, Any],
+        workflow_name: str,
+        workflow_node_name: str,
+    ) -> tuple[StageResult, dict[str, Any] | None]:
+        parent = dict(task.context or {})
+        parent["depth"] = int(parent.get("depth", 0)) + 1
+        return (
+            BumpDepthStageResult(name=self.name, status=Status.COMPLETED),
+            parent,
+        )
+
+
+class RequiresQueryStageResult(StageResult):
+    name: str = "requires_query"
+    status: Status = Status.COMPLETED
+
+
+class RequiresQueryStage(Stage):
+    """No-op stage that declares a required context key ``query``."""
+
+    name = "requires_query"
+    context_required: ClassVar[dict[str, str] | None] = {
+        "query": "original search query used for relevance filtering",
+    }
+
+    async def process(
+        self,
+        task: Task,
+        params: dict[str, Any],
+        workflow_name: str,
+        workflow_node_name: str,
+    ) -> tuple[StageResult, dict[str, Any] | None]:
+        return (
+            RequiresQueryStageResult(name=self.name, status=Status.COMPLETED),
+            None,
+        )
 
 
 class FailNTimesStage(Stage):
@@ -183,17 +234,23 @@ class FailNTimesStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         key = str(params.get("key", "default"))
         remaining = self._remaining.get(key, 0)
         if remaining > 0:
             self._remaining[key] = remaining - 1
-            return FailNTimesStageResult(
-                name=self.name,
-                status=Status.FAILED,
-                error=f"fail_n_times:{remaining}",
+            return (
+                FailNTimesStageResult(
+                    name=self.name,
+                    status=Status.FAILED,
+                    error=f"fail_n_times:{remaining}",
+                ),
+                None,
             )
-        return FailNTimesStageResult(name=self.name, status=Status.COMPLETED)
+        return (
+            FailNTimesStageResult(name=self.name, status=Status.COMPLETED),
+            None,
+        )
 
 
 class HangStage(Stage):
@@ -208,11 +265,11 @@ class HangStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         if self.gate is None:
             raise RuntimeError("HangStage.gate not set")
         await self.gate.wait()
-        return HangStageResult(name=self.name, status=Status.COMPLETED)
+        return HangStageResult(name=self.name, status=Status.COMPLETED), None
 
 
 class AlwaysNextBranch(WorkflowBranch):

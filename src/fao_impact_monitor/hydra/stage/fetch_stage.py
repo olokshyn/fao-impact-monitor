@@ -240,14 +240,14 @@ class FetchStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         if not task.url:
             result = FetchStageResult(
                 name=self.name,
                 status=Status.FAILED,
                 error="Task.url is required",
             )
-            return result
+            return result, None
 
         existing = await Fetch.find_one(Fetch.url == task.url)
         if existing is not None and existing.successful:
@@ -257,7 +257,7 @@ class FetchStage(Stage):
                 await document.push_stage_result(
                     workflow_name, workflow_node_name, result
                 )
-            return result
+            return result, None
 
         fetch_overrides = params.get("fetch_params") or {}
         browser_overrides = params.get("browser_fetch_params") or {}
@@ -332,4 +332,4 @@ class FetchStage(Stage):
         document = await _resolve_document(task)
         if document is not None:
             await document.push_stage_result(workflow_name, workflow_node_name, result)
-        return result
+        return result, None

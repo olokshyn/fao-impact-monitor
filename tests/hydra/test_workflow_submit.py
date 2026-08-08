@@ -84,6 +84,49 @@ def test_submit_rejects_non_created(
     run_async(_test())
 
 
+def test_submit_rejects_missing_context_for_non_entrypoint_stage(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    """Missing keys required by a downstream stage still fail submit."""
+
+    async def _test() -> None:
+        from fao_impact_monitor.hydra.run import Run
+
+        wf = Workflow(
+            name="submit_ctx_missing",
+            nodes=[
+                WorkflowNode(
+                    name="root",
+                    stage_name="noop",
+                    branches=[AlwaysNextBranch(next_node_names=["later"])],
+                ),
+                WorkflowNode(name="later", stage_name="requires_query"),
+            ],
+            entrypoints=["root"],
+        )
+        await wf.insert()
+        task = Task(status=Status.CREATED, url="http://ctx-missing")
+        with pytest.raises(ValueError, match="missing required keys") as exc_info:
+            await wf.submit(task)
+        assert "query" in str(exc_info.value)
+        assert "requires_query" in str(exc_info.value)
+        assert "later" in str(exc_info.value)
+        assert await Run.find_all().count() == 0
+        assert await Task.find_all().count() == 0
+
+        ok = await wf.submit(
+            Task(
+                status=Status.CREATED,
+                url="http://ctx-ok",
+                context={"query": "el nino"},
+            )
+        )
+        assert len(ok.task_ids) == 1
+
+    run_async(_test())
+
+
 def test_branch_roundtrip_on_workflow(
     hydra_db: None,
     run_async: Callable[[Coroutine[Any, Any, Any]], Any],

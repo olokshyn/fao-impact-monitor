@@ -100,10 +100,11 @@ def test_cache_hit_skips_scrapling(
     )
 
     task = Task(url=url, stage_name="fetch")
-    result = run_async(fetch_stage.process(task, {}, "wf", "node_fetch"))
+    result, ctx = run_async(fetch_stage.process(task, {}, "wf", "node_fetch"))
 
     mock_fetch.assert_not_awaited()
     assert isinstance(result, FetchStageResult)
+    assert ctx is None
     assert result.status == Status.COMPLETED
     assert result.content_type == ContentType.PDF
     assert result.body_path == body_path
@@ -137,9 +138,10 @@ def test_successful_fetch_writes_file_and_mongo(
     run_async(doc.insert())
     task = Task(url=url, source="test", document_id=doc.id, stage_name="fetch")
 
-    result = run_async(fetch_stage.process(task, {}, "wf", "node_fetch"))
+    result, ctx = run_async(fetch_stage.process(task, {}, "wf", "node_fetch"))
 
     assert result.status == Status.COMPLETED
+    assert ctx is None
     assert result.content_type == ContentType.PDF
     assert result.body_path is not None
     assert result.body_path.endswith(".pdf")
@@ -184,7 +186,7 @@ def test_body_path_extension_matches_content_type(
         ),
     )
 
-    result = run_async(
+    result, ctx = run_async(
         fetch_stage.process(
             Task(url=url, stage_name="fetch"),
             {},
@@ -193,6 +195,7 @@ def test_body_path_extension_matches_content_type(
         )
     )
     assert result.status == Status.COMPLETED
+    assert ctx is None
     assert result.content_type == ContentType.HTML
     assert result.body_path is not None
     assert result.body_path.endswith(".html")
@@ -215,7 +218,7 @@ def test_failure_useless_body(
         ),
     )
 
-    result = run_async(
+    result, ctx = run_async(
         fetch_stage.process(
             Task(url=url, stage_name="fetch"),
             {},
@@ -224,6 +227,7 @@ def test_failure_useless_body(
         )
     )
     assert result.status == Status.FAILED
+    assert ctx is None
     stored = run_async(Fetch.find_one(Fetch.url == url))
     assert stored is not None
     assert stored.successful is False
@@ -245,7 +249,7 @@ def test_unique_url_upsert_failed_then_success(
         "fao_impact_monitor.hydra.stage.fetch_stage.reliable_fetch_with_meta",
         AsyncMock(return_value=_meta(body=b"x", request_url=url)),
     )
-    failed = run_async(
+    failed, failed_ctx = run_async(
         fetch_stage.process(
             Task(url=url, stage_name="fetch"),
             {},
@@ -254,6 +258,7 @@ def test_unique_url_upsert_failed_then_success(
         )
     )
     assert failed.status == Status.FAILED
+    assert failed_ctx is None
     first = run_async(Fetch.find_one(Fetch.url == url))
     assert first is not None
     first_id = first.id
@@ -269,7 +274,7 @@ def test_unique_url_upsert_failed_then_success(
             )
         ),
     )
-    ok = run_async(
+    ok, ok_ctx = run_async(
         fetch_stage.process(
             Task(url=url, stage_name="fetch"),
             {},
@@ -278,6 +283,7 @@ def test_unique_url_upsert_failed_then_success(
         )
     )
     assert ok.status == Status.COMPLETED
+    assert ok_ctx is None
     rows = run_async(Fetch.find(Fetch.url == url).to_list())
     assert len(rows) == 1
     assert rows[0].id == first_id
@@ -291,6 +297,9 @@ def test_missing_url_fails(
     run_async: Any,
     fetch_stage: FetchStage,
 ) -> None:
-    result = run_async(fetch_stage.process(Task(stage_name="fetch"), {}, "wf", "n"))
+    result, ctx = run_async(
+        fetch_stage.process(Task(stage_name="fetch"), {}, "wf", "n")
+    )
     assert result.status == Status.FAILED
+    assert ctx is None
     assert result.error == "Task.url is required"

@@ -35,11 +35,12 @@ flowchart TB
     Exec -->|"1. claim SCHEDULED → RUNNING"| Task1
     Exec -->|"2. resolve Stage via<br/>workflow_id + workflow_node_name"| Stage
     Doc -->|"prior StageResults<br/>keyed by Workflow.name then WorkflowNode.name"| Stage
-    Stage -->|"3. run → StageResult;<br/>atomic Document updates under node name"| SR
-    SR -->|"4. stored on Task by Executor"| Task1
+    Stage -->|"3. run → (StageResult, context|None);<br/>atomic Document updates under node name"| SR
+    SR -->|"4. StageResult stored on Task by Executor"| Task1
     Stage -->|"3b. Document.stage_results[workflow][node]<br/>+ other selected fields"| Doc
     Task1 -->|"5. COMPLETED → resolve WorkflowNode from Task;<br/>run each WorkflowBranch"| WB
     WB -->|"6. create child Task(s)"| Task2
+    Task1 -->|"6b. Executor sets child.context:<br/>stage context if not None,<br/>else copy parent Task.context"| Task2
     Task2 -->|"parent_task_id / child_task_ids"| Task1
   end
 ```
@@ -47,7 +48,7 @@ flowchart TB
 Concepts:
 
 1. `Task` represents a unit of work in the system. Newly constructed tasks start in `CREATED`. After `Workflow.submit`, they become `SCHEDULED` and point at a concrete `WorkflowNode` via `workflow_id` and `workflow_node_name` (`WorkflowNode.name`—not only at a `stage_name`, because the same `Stage` may appear more than once in a `Workflow`).
-1. `Stage` is a worker that performs this unit of work. It must **not** create `Task`s: it does not know which `WorkflowNode`s come next. It only returns a `StageResult` with enough information for routing. While running, it can read prior `StageResult`s from the `Document` (keyed as `Document.stage_results[workflow_name][workflow_node_name]`), and it is responsible for atomically writing its own `StageResult` (and any other selected document fields) under that same path—never by overwriting the whole document.
+1. `Stage` is a worker that performs this unit of work. It must **not** create `Task`s: it does not know which `WorkflowNode`s come next. It returns a `StageResult` with enough information for routing, plus an optional replacement `context` dict for descendant tasks (or `None` to passthrough the parent’s `Task.context`). While running, it can read prior `StageResult`s from the `Document` (keyed as `Document.stage_results[workflow_name][workflow_node_name]`), and it is responsible for atomically writing its own `StageResult` (and any other selected document fields) under that same path—never by overwriting the whole document.
 1. `Workflow` defines a graph (cycles possible) of Stage operations that is stored as a flat list of `WorkflowNode`s (`nodes`; order does not matter) plus `entrypoints` naming which nodes start when a `Task` is submitted. Each node links to successors through its `WorkflowBranch`es.
    1. each `WorkflowNode` names a `Stage` to run and its static parameters, and
    1. each `WorkflowBranch` is a router: `route(result, current_node, next_nodes, params)` builds one or more child `Task`s for allowed next `WorkflowNode`s; instance `params` configure reusable branch implementations.
@@ -98,6 +99,7 @@ The same `Stage` may appear twice in one `Workflow` (for example with different 
 | `child_task_ids`      | `list[ID]`                                                           | No          | Child `Task`s created after this one by `WorkflowBranch`es. Append with atomic `$push` only—never overwrite the whole parent `Task`.                                                                                                                                                        |
 | `status`              | `CREATED \| SCHEDULED \| RUNNING \| RETRYING \| COMPLETED \| FAILED` | Yes         | Lifecycle state. Default for a newly constructed `Task` is `CREATED`. `COMPLETED` and `FAILED` are terminal. `RETRYING` means the stage returned a `StageResult` with failed status, but `attempts` has not yet reached the configured maximum—so the task will be claimed again.           |
 | `stage_name`          | `str \| None`                                                        | Yes         | Copy of `WorkflowNode.stage_name` for `Executor` scheduling / debugging / capacity limits. Optional: unset while `status` is `CREATED` (before `Workflow.submit`). Not sufficient alone to locate the node when a stage is reused. Use `workflow_id` + `workflow_node_name` instead.        |
+| `context`             | `dict[str, Any] \| None`                                             | No          | Free-form context from the root task, inherited by descendants. Set on the root `Task` before `Workflow.submit` with every key any stage declares in `Stage.context_required`. Stages may update existing keys for children via `process`’s second return value; the `Executor` copies context onto child tasks. Not part of `StageResult`. |
 | `url`                 | `str \| None`                                                        | Yes         | Resource to process. Indexed, not unique.                                                                                                                                                                                                                                                   |
 | `source`              | `str \| None`                                                        | Yes         | Data source for the URL. Indexed, not unique.                                                                                                                                                                                                                                               |
 | `document_id`         | `ID \| None`                                                         | Yes         | `Document` this task created or updated, if any.                                                                                                                                                                                                                                            |
@@ -114,11 +116,18 @@ The same `Stage` may appear twice in one `Workflow` (for example with different 
 
 Not stored in the database. Concrete classes register at import time with `RegistryMeta` from [`meta_magic.py`](src/fao_impact_monitor/utils/meta_magic.py).
 
-A `Stage` only executes work for a `Task` and returns a `StageResult`. It must **not** create `Task`s and must not know about later `WorkflowNode`s. Routing belongs to `WorkflowBranch`.
+A `Stage` only executes work for a `Task` and returns `(StageResult, context | None)`. It must **not** create `Task`s and must not know about later `WorkflowNode`s. Routing belongs to `WorkflowBranch`.
 
 The `Executor` loads the `Stage` by resolving `Task.workflow_id` → `Workflow` → `Task.workflow_node_name` (`WorkflowNode.name`) → `WorkflowNode` → `stage_name`, then calls `process` with `WorkflowNode.stage_params`, the workflow’s `name`, and that same `workflow_node_name`.
 
-Inside `process`, the stage loads or creates the `Document` from the `Task` (`document_id`, `url`, `source`, …). It may read the **latest** prior `StageResult`s on that document at `Document.stage_results[workflow_name][workflow_node_name]` (not keyed by bare `Stage.name`).
+Inside `process`, the stage loads or creates the `Document` from the `Task` (`document_id`, `url`, `source`, …). It may read `Task.context` and the **latest** prior `StageResult`s on that document at `Document.stage_results[workflow_name][workflow_node_name]` (not keyed by bare `Stage.name`).
+
+**Task context.** `Task.context` is a free-form `dict` set on the root task (for example crawl depth, original query) and inherited by descendants. It is **not** part of `StageResult`: the result is the output of this stage on this task; context is for future descendant tasks. The second value of `process` is:
+
+- a new `dict` → the `Executor` sets that context on every child task created after this completion;
+- `None` → the `Executor` copies the parent’s `Task.context` onto each child (passthrough).
+
+All context keys needed anywhere in the workflow must be present on the **root** `Task` before `Workflow.submit`. Later stages may update existing keys for descendants; they should not introduce new keys that were not declared for the pipeline. A stage declares its needs with the class variable `Stage.context_required`: a map from context key to a short explanation of why that key is required (or `None` if the stage needs no context). On submit, `Workflow` checks every node’s stage (including non-entrypoints) against `task.context` and raises `ValueError` if any required key is missing—without creating a `Run` or scheduling tasks.
 
 **Atomic document updates.** Any write to a shared `Document` (appending/merging `stage_results`, setting `title`, updating `metadata`, etc.) must be an atomic partial update (for example MongoDB `$set` / `$push` on selected paths). A `Stage` must **not** call `.save()` on the whole document: concurrent stages on the same document would overwrite each other’s fields. Only update the fields this stage intends to change.
 
@@ -141,6 +150,8 @@ class StageMeta(RegistryMeta):
 
 class Stage(ABC, metaclass=StageMeta):
     name: str  # globally unique among Stage classes; registry key
+    context_required: ClassVar[dict[str, str] | None] = None
+    # context key → why this stage needs it; checked by Workflow.submit
 
     @abstractmethod
     async def process(
@@ -149,7 +160,7 @@ class Stage(ABC, metaclass=StageMeta):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         """Run this stage for ``task``.
 
         ``params`` are ``WorkflowNode.stage_params``.
@@ -164,7 +175,11 @@ class Stage(ABC, metaclass=StageMeta):
         Persist (and optionally merge) this run's ``StageResult`` on the
         document under that path using an atomic partial update.
         Never ``.save()`` the whole document.
-        Return a ``StageResult`` only—do not create ``Task``s or consult
+
+        Return ``(StageResult, context)``. A non-``None`` ``context`` replaces
+        ``Task.context`` on all child tasks created after this completion;
+        ``None`` means passthrough (children inherit a copy of the parent
+        ``Task.context``). Do not create ``Task``s or consult
         ``WorkflowBranch``es.
         """
         ...
@@ -178,7 +193,7 @@ class Stage(ABC, metaclass=StageMeta):
 
 Pydantic `BaseModel`: the result of running a `Stage` on a `Task`. Subclasses register with `RegistryModelMeta` from [`meta_magic.py`](src/fao_impact_monitor/utils/meta_magic.py) and may add custom fields. Lookup is by `name`.
 
-The `StageResult` must carry enough information for each `WorkflowBranch` on the current `WorkflowNode` to decide which child `Task`s to create (URLs, document ids, flags, etc.). It does not create those `Task`s itself.
+The `StageResult` must carry enough information for each `WorkflowBranch` on the current `WorkflowNode` to decide which child `Task`s to create (URLs, document ids, flags, etc.). It does not create those `Task`s itself. Descendant `Task.context` is separate: stages return it as the second value of `process`, and the `Executor` applies it when inserting children.
 
 `StageResult.status` uses the **same type** as `Task.status` (`CREATED | SCHEDULED | RUNNING | RETRYING | COMPLETED | FAILED`). A stage will typically only set values such as `COMPLETED` or `FAILED` (and the executor may map failure + remaining attempts to `Task` `RETRYING`). The types must match because the executor copies `StageResult.status` onto the `Task` (with that retry mapping where needed).
 
@@ -223,6 +238,10 @@ class Workflow(BeanieDocument):
     async def submit(self, task: Task) -> Run:
         """Accept a Task in CREATED state and enqueue work.
 
+        - Verify ``task.context`` contains every key declared in
+          ``Stage.context_required`` for every stage used by this
+          Workflow's nodes (not only entrypoints). Raise ``ValueError``
+          and do not schedule if any key is missing.
         - Create a new Run for this Workflow.
         - For each name in entrypoints, bind a Task to that WorkflowNode
           (workflow_id; workflow_node_name = node.name;
@@ -326,7 +345,8 @@ Behavior:
 1. After a successful stage, `Executor` resolves `next_nodes` from `next_node_names` via the workflow registry and awaits `route(result, current_node, next_nodes, params)`.
 2. Each produced `Task` must set `workflow_id`, `workflow_node_name = node.name` (`node.name` ∈ `next_node_names`), `stage_name` (from that next node), `run_id`, `parent_task_id`, etc.
 3. After the branch returns, `Executor` **verifies** that every produced `Task.workflow_node_name` is in this branch’s `next_node_names`. Invalid targets are rejected.
-4. Insert child tasks; atomically `$push` each new id onto the parent’s `child_task_ids` and onto `Run.task_ids`.
+4. In `_route_children`, the `Executor` sets each child’s `context`: if the stage returned a non-`None` context, use that; otherwise copy the parent’s `Task.context` (or leave `None`). Branches need not copy context; the executor overwrites whatever they set.
+5. Insert child tasks; atomically `$push` each new id onto the parent’s `child_task_ids` and onto `Run.task_ids`.
 
 A node may list several `WorkflowBranch`es; all are applied, so many routers can fan out many `Task`s.
 
@@ -391,8 +411,8 @@ It runs several tasks per stage in parallel with `asyncio`. Each `stage_name` ha
 The main loop waits on two kinds of events:
 
 1. **New tasks** for stages that still have free capacity. When capacity for a `stage_name` is below its limit, the executor tries to claim another eligible task with that `stage_name` (atomic `findOneAndUpdate` as above, preferring the oldest `Task.updated_at`) and starts it as an `asyncio` task.
-2. **Stage completions.** When a running stage finishes, in-flight count for that `stage_name` decreases (capacity increases). The executor can then claim more work for that stage. After the `Stage` has atomically updated the `Document` and the `Executor` has stored the returned `StageResult` on the `Task`:
-   - on success → run the current node’s `WorkflowBranch`es and enqueue child `Task`s;
+2. **Stage completions.** When a running stage finishes, in-flight count for that `stage_name` decreases (capacity increases). The executor can then claim more work for that stage. After the `Stage` has atomically updated the `Document` and the `Executor` has stored the returned `StageResult` on the `Task` (the optional child `context` from `process` is kept only for routing):
+   - on success → run the current node’s `WorkflowBranch`es and enqueue child `Task`s, setting each child’s `context` from the stage’s second return value or by copying the parent’s `Task.context`;
    - on stage failure with attempts left → set `Task.status = RETRYING` (later reclaimed as a new attempt);
    - on stage failure with no attempts left → set `Task.status = FAILED`.
 
@@ -435,7 +455,8 @@ class Executor:
 
     async def execute_task(self, task: Task) -> None:
         """Resolve WorkflowNode → Stage; call Stage.process; persist result;
-        route via WorkflowBranch or mark RETRYING / FAILED."""
+        route via WorkflowBranch (propagating Task.context) or mark
+        RETRYING / FAILED."""
         ...
 ```
 
@@ -494,6 +515,7 @@ Decisions not fixed by the architecture above, plus any deviations:
 7. **Concrete Stages:** Hydra includes product stages such as `FetchStage` under `hydra/stage/`; abstract `Stage` / `WorkflowBranch` remain the extension points. Test-only stages/branches live under `tests/hydra/`.
 8. **Executor constructor:** takes plain kwargs (concurrency, max_attempts, …) rather than a `HydraConfig` instance so Hydra stays movable without importing the host app `Config`.
 9. **Blob I/O:** Stages write blobs via **fsspec**. Default save roots are relative to the process working directory (configurable for object storage later).
+10. **Task.context copy:** When `_route_children` assigns context to children, it uses a shallow `dict(...)` copy so sibling tasks do not share one mutable mapping. Callers set root `Task.context` before `Workflow.submit`; multi-entrypoint `model_copy(deep=True)` already preserves it.
 
 ### Deviations
 

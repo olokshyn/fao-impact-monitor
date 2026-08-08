@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,9 @@ class Stage(ABC, metaclass=StageMeta):
     """
 
     name: str
+    context_required: ClassVar[dict[str, str] | None] = None
+    # Keys this stage needs in Task.context → why each key is required.
+    # Workflow.submit checks every stage in the workflow against the root task.
 
     @abstractmethod
     async def process(
@@ -55,7 +58,7 @@ class Stage(ABC, metaclass=StageMeta):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> StageResult:
+    ) -> tuple[StageResult, dict[str, Any] | None]:
         """Run this stage for ``task``.
 
         ``params`` are ``WorkflowNode.stage_params``.
@@ -67,6 +70,10 @@ class Stage(ABC, metaclass=StageMeta):
         Persist (and optionally merge) this run's ``StageResult`` on the
         document under ``[workflow_name][workflow_node_name]`` using an atomic
         partial update. Never ``.save()`` the whole document.
+
+        Return ``(StageResult, context)``. A non-``None`` ``context`` replaces
+        ``Task.context`` on all child tasks created after this completion;
+        ``None`` means passthrough: children inherit a copy of the parent ``Task.context``.
         """
         ...
 

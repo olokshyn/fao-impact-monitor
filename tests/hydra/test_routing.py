@@ -15,6 +15,7 @@ from fao_impact_monitor.hydra import (
     WorkflowNode,
 )
 from tests.hydra.conftest import (
+    AlwaysNextBranch,
     FanOutBranch,
     IllegalTargetBranch,
     run_executor_until,
@@ -108,5 +109,130 @@ def test_illegal_branch_target_rejected(
 
         tasks = await Task.find(Task.run_id == run.id).to_list()
         assert not any(t.workflow_node_name == "evil" for t in tasks)
+
+    run_async(_test())
+
+
+def test_context_passthrough_to_children(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    async def _test() -> None:
+        wf = Workflow(
+            name="ctx_pass",
+            nodes=[
+                WorkflowNode(
+                    name="root",
+                    stage_name="noop",
+                    branches=[AlwaysNextBranch(next_node_names=["child"])],
+                ),
+                WorkflowNode(name="child", stage_name="noop"),
+            ],
+            entrypoints=["root"],
+        )
+        await wf.insert()
+        ctx = {"query": "x", "depth": 0}
+        run = await wf.submit(
+            Task(status=Status.CREATED, url="http://ctx", context=ctx)
+        )
+        ex = Executor(
+            concurrency={"noop": 2},
+            claim_idle_sleep_seconds=0.01,
+            heartbeat_interval_minutes=60,
+        )
+
+        async def _done() -> bool:
+            tasks = await Task.find(Task.run_id == run.id).to_list()
+            return len(tasks) >= 2 and all(t.status == Status.COMPLETED for t in tasks)
+
+        await run_executor_until(ex, predicate=_done, timeout=5.0)
+        tasks = await Task.find(Task.run_id == run.id).to_list()
+        root = next(t for t in tasks if t.workflow_node_name == "root")
+        child = next(t for t in tasks if t.workflow_node_name == "child")
+        assert root.context == {"query": "x", "depth": 0}
+        assert child.context == {"query": "x", "depth": 0}
+        assert child.context is not root.context
+
+    run_async(_test())
+
+
+def test_context_replaced_by_stage(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    async def _test() -> None:
+        wf = Workflow(
+            name="ctx_bump",
+            nodes=[
+                WorkflowNode(
+                    name="root",
+                    stage_name="bump_depth",
+                    branches=[AlwaysNextBranch(next_node_names=["child"])],
+                ),
+                WorkflowNode(name="child", stage_name="noop"),
+            ],
+            entrypoints=["root"],
+        )
+        await wf.insert()
+        run = await wf.submit(
+            Task(
+                status=Status.CREATED,
+                url="http://bump",
+                context={"query": "x", "depth": 0},
+            )
+        )
+        ex = Executor(
+            concurrency={"bump_depth": 1, "noop": 1},
+            claim_idle_sleep_seconds=0.01,
+            heartbeat_interval_minutes=60,
+        )
+
+        async def _done() -> bool:
+            tasks = await Task.find(Task.run_id == run.id).to_list()
+            return len(tasks) >= 2 and all(t.status == Status.COMPLETED for t in tasks)
+
+        await run_executor_until(ex, predicate=_done, timeout=5.0)
+        tasks = await Task.find(Task.run_id == run.id).to_list()
+        root = next(t for t in tasks if t.workflow_node_name == "root")
+        child = next(t for t in tasks if t.workflow_node_name == "child")
+        assert root.context == {"query": "x", "depth": 0}
+        assert child.context == {"query": "x", "depth": 1}
+
+    run_async(_test())
+
+
+def test_context_none_stays_none(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    async def _test() -> None:
+        wf = Workflow(
+            name="ctx_none",
+            nodes=[
+                WorkflowNode(
+                    name="root",
+                    stage_name="noop",
+                    branches=[AlwaysNextBranch(next_node_names=["child"])],
+                ),
+                WorkflowNode(name="child", stage_name="noop"),
+            ],
+            entrypoints=["root"],
+        )
+        await wf.insert()
+        run = await wf.submit(Task(status=Status.CREATED, url="http://none"))
+        ex = Executor(
+            concurrency={"noop": 2},
+            claim_idle_sleep_seconds=0.01,
+            heartbeat_interval_minutes=60,
+        )
+
+        async def _done() -> bool:
+            tasks = await Task.find(Task.run_id == run.id).to_list()
+            return len(tasks) >= 2 and all(t.status == Status.COMPLETED for t in tasks)
+
+        await run_executor_until(ex, predicate=_done, timeout=5.0)
+        tasks = await Task.find(Task.run_id == run.id).to_list()
+        child = next(t for t in tasks if t.workflow_node_name == "child")
+        assert child.context is None
 
     run_async(_test())
