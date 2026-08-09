@@ -143,3 +143,40 @@ def test_claim_prefers_oldest_updated_at(
         assert claimed.id == t_old.id
 
     run_async(_test())
+
+
+def test_claim_prefers_higher_priority_over_older(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    async def _test() -> None:
+        from datetime import UTC, datetime, timedelta
+
+        older = datetime.now(UTC) - timedelta(minutes=10)
+        newer = datetime.now(UTC) - timedelta(minutes=1)
+        low = Task(
+            status=Status.SCHEDULED,
+            stage_name="noop",
+            url="http://low",
+            priority=0,
+            updated_at=older,
+        )
+        high = Task(
+            status=Status.SCHEDULED,
+            stage_name="noop",
+            url="http://high",
+            priority=5,
+            updated_at=newer,
+        )
+        await low.insert()
+        await high.insert()
+        await low.update({"$set": {"updated_at": older, "priority": 0}})
+        await high.update({"$set": {"updated_at": newer, "priority": 5}})
+
+        ex = Executor(concurrency={"noop": 1}, max_attempts=3)
+        claimed = await ex.claim_task("noop")
+        assert claimed is not None
+        assert claimed.id == high.id
+        assert claimed.priority == 5
+
+    run_async(_test())

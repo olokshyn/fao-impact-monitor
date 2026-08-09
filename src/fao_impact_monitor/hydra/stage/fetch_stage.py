@@ -28,7 +28,7 @@ from fao_impact_monitor.hydra.scrapling import (
 )
 from fao_impact_monitor.hydra.stage.stage import Stage, StageResult
 from fao_impact_monitor.hydra.status import Status
-from fao_impact_monitor.hydra.task.task import Task
+from fao_impact_monitor.hydra.task.task import Task, TaskState
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ class FetchStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         if not task.url:
             result = FetchStageResult(
                 name=self.name,

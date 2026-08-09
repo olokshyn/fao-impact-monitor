@@ -236,3 +236,45 @@ def test_context_none_stays_none(
         assert child.context is None
 
     run_async(_test())
+
+
+def test_priority_overridden_by_stage(
+    hydra_db: None,
+    run_async: Callable[[Coroutine[Any, Any, Any]], Any],
+) -> None:
+    async def _test() -> None:
+        wf = Workflow(
+            name="prio_bump",
+            nodes=[
+                WorkflowNode(
+                    name="root",
+                    stage_name="set_priority",
+                    stage_params={"priority": 10},
+                    branches=[AlwaysNextBranch(next_node_names=["child"])],
+                ),
+                WorkflowNode(name="child", stage_name="noop"),
+            ],
+            entrypoints=["root"],
+        )
+        await wf.insert()
+        run = await wf.submit(
+            Task(status=Status.CREATED, url="http://prio", priority=0)
+        )
+        ex = Executor(
+            concurrency={"set_priority": 1, "noop": 1},
+            claim_idle_sleep_seconds=0.01,
+            heartbeat_interval_minutes=60,
+        )
+
+        async def _done() -> bool:
+            tasks = await Task.find(Task.run_id == run.id).to_list()
+            return len(tasks) >= 2 and all(t.status == Status.COMPLETED for t in tasks)
+
+        await run_executor_until(ex, predicate=_done, timeout=5.0)
+        tasks = await Task.find(Task.run_id == run.id).to_list()
+        root = next(t for t in tasks if t.workflow_node_name == "root")
+        child = next(t for t in tasks if t.workflow_node_name == "child")
+        assert root.priority == 0
+        assert child.priority == 10
+
+    run_async(_test())

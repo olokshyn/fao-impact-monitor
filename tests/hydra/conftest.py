@@ -17,6 +17,7 @@ from fao_impact_monitor.hydra import (
     StageResult,
     Status,
     Task,
+    TaskState,
     WorkflowBranch,
     WorkflowNode,
     init_hydra_beanie,
@@ -117,7 +118,7 @@ class IncrementStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         amount = int(params.get("amount", 1))
         doc = await _load_counter_doc(task)
         new_counter = await doc.inc_counter(amount)
@@ -143,7 +144,7 @@ class AddValueStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         amount = int(params["amount"])
         doc = await _load_counter_doc(task)
         new_value = await doc.inc_value(amount)
@@ -168,7 +169,7 @@ class NoopStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         return NoopStageResult(name=self.name, status=Status.COMPLETED), None
 
 
@@ -183,12 +184,36 @@ class BumpDepthStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         parent = dict(task.context or {})
         parent["depth"] = int(parent.get("depth", 0)) + 1
         return (
             BumpDepthStageResult(name=self.name, status=Status.COMPLETED),
-            parent,
+            TaskState(context=parent),
+        )
+
+
+class SetPriorityStageResult(StageResult):
+    name: str = "set_priority"
+    status: Status = Status.COMPLETED
+
+
+class SetPriorityStage(Stage):
+    """Complete and set child priority from params['priority'] (default 10)."""
+
+    name = "set_priority"
+
+    async def process(
+        self,
+        task: Task,
+        params: dict[str, Any],
+        workflow_name: str,
+        workflow_node_name: str,
+    ) -> tuple[StageResult, TaskState | None]:
+        priority = int(params.get("priority", 10))
+        return (
+            SetPriorityStageResult(name=self.name, status=Status.COMPLETED),
+            TaskState(priority=priority),
         )
 
 
@@ -211,7 +236,7 @@ class RequiresQueryStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         return (
             RequiresQueryStageResult(name=self.name, status=Status.COMPLETED),
             None,
@@ -234,7 +259,7 @@ class FailNTimesStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         key = str(params.get("key", "default"))
         remaining = self._remaining.get(key, 0)
         if remaining > 0:
@@ -265,7 +290,7 @@ class HangStage(Stage):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         if self.gate is None:
             raise RuntimeError("HangStage.gate not set")
         await self.gate.wait()

@@ -35,7 +35,7 @@ from fao_impact_monitor.hydra.stage.stage import (
     get_stage_result_class,
 )
 from fao_impact_monitor.hydra.status import Status
-from fao_impact_monitor.hydra.task.task import Task
+from fao_impact_monitor.hydra.task.task import Task, TaskState
 from fao_impact_monitor.hydra.workflow.workflow import Workflow
 from fao_impact_monitor.hydra.workflow.workflow_branch import (
     WorkflowBranch,
@@ -96,6 +96,7 @@ __all__ = [
     "StageResult",
     "Status",
     "Task",
+    "TaskState",
     "Workflow",
     "WorkflowBranch",
     "WorkflowNode",

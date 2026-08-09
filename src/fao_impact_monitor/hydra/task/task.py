@@ -5,10 +5,25 @@ from typing import Annotated, Any
 
 from beanie import Document as BeanieDocument
 from beanie import Indexed, PydanticObjectId
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from fao_impact_monitor.hydra.stage.stage import StageResult
 from fao_impact_monitor.hydra.status import Status
+
+
+class TaskState(BaseModel):
+    """Partial overrides a Stage may apply to descendant Tasks.
+
+    Any field left as ``None`` means "do not override"; the Executor keeps the
+    parent Task's value (and still preserves ``url`` / ``source`` /
+    ``document_id`` if a WorkflowBranch already set them on the child).
+    """
+
+    context: dict[str, Any] | None = None
+    priority: int | None = None
+    url: str | None = None
+    source: str | None = None
+    document_id: PydanticObjectId | None = None
 
 
 class Task(BeanieDocument):
@@ -22,6 +37,7 @@ class Task(BeanieDocument):
     status: Annotated[Status, Indexed()] = Status.CREATED
     stage_name: Annotated[str | None, Indexed()] = None
     context: dict[str, Any] | None = None
+    priority: int = 0
     url: Annotated[str | None, Indexed()] = None
     source: Annotated[str | None, Indexed()] = None
     document_id: Annotated[PydanticObjectId | None, Indexed()] = None

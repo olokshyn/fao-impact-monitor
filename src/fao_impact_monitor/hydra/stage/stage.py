@@ -10,7 +10,7 @@ from fao_impact_monitor.hydra.status import Status
 from fao_impact_monitor.utils.meta_magic import RegistryMeta, RegistryModelMeta
 
 if TYPE_CHECKING:
-    from fao_impact_monitor.hydra.task.task import Task
+    from fao_impact_monitor.hydra.task.task import Task, TaskState
 
 _STAGE_RESULT_REGISTRY: dict[str, type[StageResult]] = {}
 
@@ -58,7 +58,7 @@ class Stage(ABC, metaclass=StageMeta):
         params: dict[str, Any],
         workflow_name: str,
         workflow_node_name: str,
-    ) -> tuple[StageResult, dict[str, Any] | None]:
+    ) -> tuple[StageResult, TaskState | None]:
         """Run this stage for ``task``.
 
         ``params`` are ``WorkflowNode.stage_params``.
@@ -71,9 +71,10 @@ class Stage(ABC, metaclass=StageMeta):
         document under ``[workflow_name][workflow_node_name]`` using an atomic
         partial update. Never ``.save()`` the whole document.
 
-        Return ``(StageResult, context)``. A non-``None`` ``context`` replaces
-        ``Task.context`` on all child tasks created after this completion;
-        ``None`` means passthrough: children inherit a copy of the parent ``Task.context``.
+        Return ``(StageResult, task_state)``. A non-``None`` ``TaskState``
+        overrides only its non-``None`` fields on all child tasks created
+        after this completion; ``None`` means full passthrough from the
+        parent Task (context, priority, url, source, document_id).
         """
         ...
 

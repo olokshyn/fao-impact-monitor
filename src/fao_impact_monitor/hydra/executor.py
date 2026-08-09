@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, cast
+from typing import Annotated, cast
 from uuid import uuid4
 
 from beanie import Document as BeanieDocument
@@ -11,11 +11,11 @@ from beanie import Indexed
 from beanie.odm.queries.update import UpdateResponse
 from beanie.operators import And, Or
 from pydantic import Field
-from pymongo import ASCENDING
+from pymongo import ASCENDING, DESCENDING
 
 from fao_impact_monitor.hydra.stage.stage import StageResult, get_stage
 from fao_impact_monitor.hydra.status import Status
-from fao_impact_monitor.hydra.task.task import Task
+from fao_impact_monitor.hydra.task.task import Task, TaskState
 from fao_impact_monitor.hydra.workflow.workflow import Workflow
 from fao_impact_monitor.hydra.workflow.workflow_node import WorkflowNode
 
@@ -220,8 +220,9 @@ class Executor:
     async def claim_task(self, stage_name: str) -> Task | None:
         """Atomic findOneAndUpdate: eligible + stage_name → RUNNING.
 
-        Prefers the oldest eligible task (``updated_at`` ascending).
-        Eligible means ``SCHEDULED``, or ``RETRYING`` with attempts remaining.
+        Prefers higher ``priority`` first, then oldest ``updated_at``
+        within the same priority. Eligible means ``SCHEDULED``, or
+        ``RETRYING`` with attempts remaining.
         """
         now = datetime.now(UTC)
         claimed = await Task.find_one(
@@ -244,7 +245,7 @@ class Executor:
                 "$inc": {"attempts": 1},
             },
             response_type=UpdateResponse.NEW_DOCUMENT,
-            sort=[("updated_at", ASCENDING)],
+            sort=[("priority", DESCENDING), ("updated_at", ASCENDING)],
         )
         return cast(Task | None, claimed)
 
@@ -282,7 +283,7 @@ class Executor:
             return
 
         stage = get_stage(node.stage_name)
-        result, child_context = await stage.process(
+        result, child_state = await stage.process(
             task,
             node.stage_params,
             workflow.name,
@@ -309,7 +310,7 @@ class Executor:
         )
 
         if status == Status.COMPLETED:
-            await self._route_children(task, workflow, node, result, child_context)
+            await self._route_children(task, workflow, node, result, child_state)
 
     async def _route_children(
         self,
@@ -317,7 +318,7 @@ class Executor:
         workflow: Workflow,
         node: WorkflowNode,
         result: StageResult,
-        child_context: dict[str, Any] | None,
+        child_state: TaskState | None,
     ) -> None:
         from fao_impact_monitor.hydra.run import Run
 
@@ -352,12 +353,19 @@ class Executor:
                     child.source = task.source
                 if child.document_id is None:
                     child.document_id = task.document_id
-                if child_context is not None:
-                    child.context = dict(child_context)
-                elif task.context is not None:
-                    child.context = dict(task.context)
-                else:
-                    child.context = None
+                child.context = dict(task.context) if task.context is not None else None
+                child.priority = task.priority
+                if child_state is not None:
+                    if child_state.context is not None:
+                        child.context = dict(child_state.context)
+                    if child_state.priority is not None:
+                        child.priority = child_state.priority
+                    if child_state.url is not None:
+                        child.url = child_state.url
+                    if child_state.source is not None:
+                        child.source = child_state.source
+                    if child_state.document_id is not None:
+                        child.document_id = child_state.document_id
                 if child.status == Status.CREATED:
                     child.status = Status.SCHEDULED
                 await child.insert()

@@ -1,3 +1,3 @@
-from fao_impact_monitor.hydra.task.task import Task
+from fao_impact_monitor.hydra.task.task import Task, TaskState
 
-__all__ = ["Task"]
+__all__ = ["Task", "TaskState"]
