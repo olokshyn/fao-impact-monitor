@@ -243,6 +243,22 @@ class RequiresQueryStage(Stage):
         )
 
 
+class RaisePrerequisiteStage(Stage):
+    """Raise immediately — simulates unmet stage prerequisites."""
+
+    name = "raise_prerequisite"
+
+    async def process(
+        self,
+        task: Task,
+        params: dict[str, Any],
+        workflow_name: str,
+        workflow_node_name: str,
+    ) -> tuple[StageResult, TaskState | None]:
+        msg = str(params.get("message", "missing prerequisite"))
+        raise RuntimeError(msg)
+
+
 class FailNTimesStage(Stage):
     """Fail the first N process calls globally, then succeed."""
 

@@ -252,15 +252,19 @@ class Executor:
     async def _run_claimed(self, task: Task, stage_name: str) -> None:
         try:
             await self.execute_task(task)
-        except Exception:
-            logger.exception("Unhandled error executing task %s", task.id)
+        except Exception as exc:
+            logger.exception("Unhandled error executing task %s", task.id, exc_info=exc)
             await task.set_fields(
                 status=Status.FAILED,
-                error="Unhandled executor exception",
+                error=f"Unhandled executor exception: {exc}",
             )
 
     async def execute_task(self, task: Task) -> None:
-        """Resolve WorkflowNode → Stage; process; persist; route or retry/fail."""
+        """Resolve WorkflowNode → Stage; process; persist; route or retry/fail.
+
+        If ``Stage.process`` raises, mark the Task FAILED with the exception
+        message and return without writing to the Document or routing.
+        """
         if task.workflow_id is None or task.workflow_node_name is None:
             await task.set_fields(
                 status=Status.FAILED,
@@ -283,12 +287,26 @@ class Executor:
             return
 
         stage = get_stage(node.stage_name)
-        result, child_state = await stage.process(
-            task,
-            node.stage_params,
-            workflow.name,
-            task.workflow_node_name,
-        )
+        try:
+            result, child_state = await stage.process(
+                task,
+                node.stage_params,
+                workflow.name,
+                task.workflow_node_name,
+            )
+        except Exception as exc:
+            # Stage raised (e.g. unmet prerequisites). Fail the Task only;
+            # do not write FAILED onto the Document—the Stage may have.
+            logger.exception(
+                "Stage %s raised for task %s",
+                node.stage_name,
+                task.id,
+            )
+            await task.set_fields(
+                status=Status.FAILED,
+                error=str(exc),
+            )
+            return
 
         if result.status == Status.COMPLETED:
             status = Status.COMPLETED

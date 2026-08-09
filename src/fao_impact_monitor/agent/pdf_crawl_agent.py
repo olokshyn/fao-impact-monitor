@@ -14,7 +14,7 @@ from fao_impact_monitor.config import AwsBedrockConfig, PdfCrawlConfig, get_conf
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are a link-extraction agent for the FAO Impact Monitor data lake.
+You are a link-extraction agent.
 
 Your job is to read an HTML page and select only the hyperlinks that advance
 a crawl toward documentary PDF evidence. On PDF abstract / document-detail

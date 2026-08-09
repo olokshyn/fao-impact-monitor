@@ -1,6 +1,8 @@
 {
     "name": "El Niño",
     "description": "El Niño is a natural climate pattern in which parts of the tropical Pacific Ocean become unusually warm. It changes weather around the world, causing droughts in some places and heavier rain or flooding in others.",
+    "topic": "Droughts and floods caused by El Niño and their impact on agriculture and livelihoods",
+    "data_filter": "evidence related to these specific El Niño events in 1997-98, 2015-16, 2018-19, 2023-24",
     "data_sources": [
         {
             "source": "FAORepository",

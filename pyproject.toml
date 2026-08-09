@@ -11,6 +11,7 @@ dependencies = [
     "asyncio>=4.0.0",
     "beanie>=2.1.0",
     "docling>=2.117.0",
+    "dspy>=3.3.0",
     "fsspec>=2025.3.0",
     "httpx>=0.28.1",
     "langchain>=1.3.14",
@@ -38,6 +39,7 @@ check = "fao_impact_monitor.check:app"
 clear-datalake = "fao_impact_monitor.clear_datalake:app"
 pipeline = "fao_impact_monitor.pipeline:app"
 install-browsers = "fao_impact_monitor.hydra.scrapling:ensure_chromium_main"
+train-link-extract-agent = "fao_impact_monitor.agent.train_link_extract_agent:app"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
@@ -71,6 +73,14 @@ markers = [
 [tool.mypy]
 strict = true
 exclude = ["^notebooks/"]
+
+[[tool.mypy.overrides]]
+module = "dspy"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "dspy.*"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "wbgapi"

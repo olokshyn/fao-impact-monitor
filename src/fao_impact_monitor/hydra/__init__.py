@@ -28,6 +28,10 @@ from fao_impact_monitor.hydra.stage.fetch_stage import (
     FetchStage,
     FetchStageResult,
 )
+from fao_impact_monitor.hydra.stage.link_extract_stage import (
+    LinkExtractStage,
+    LinkExtractStageResult,
+)
 from fao_impact_monitor.hydra.stage.stage import (
     Stage,
     StageResult,
@@ -88,6 +92,8 @@ __all__ = [
     "FetchStage",
     "FetchStageResult",
     "HydraConfig",
+    "LinkExtractStage",
+    "LinkExtractStageResult",
     "Relation",
     "RelationSide",
     "RelationType",

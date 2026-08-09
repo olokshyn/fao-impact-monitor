@@ -49,6 +49,20 @@ class PdfCrawlConfig(BaseSettings):
     detected_title_validity_depth: int = 3
 
 
+class LinkExtractConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="LINK_EXTRACT_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-luna"
+    max_agent_retries: int = 3
+    max_urls_per_page: int = 50
+    dspy_state_path: Path = (
+        Path(__file__).parent / "agent" / "artifacts" / "link_extract.json"
+    )
+
+
 class PdfExtractConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PDF_EXTRACT_",
@@ -162,6 +176,7 @@ class Config(BaseSettings):
 
     aws_bedrock: AwsBedrockConfig = Field(default_factory=AwsBedrockConfig)
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
+    link_extract: LinkExtractConfig = Field(default_factory=LinkExtractConfig)
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)

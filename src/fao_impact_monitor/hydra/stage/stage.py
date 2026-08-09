@@ -71,6 +71,10 @@ class Stage(ABC, metaclass=StageMeta):
         document under ``[workflow_name][workflow_node_name]`` using an atomic
         partial update. Never ``.save()`` the whole document.
 
+        Raise if a hard prerequisite is not met. The Executor catches the
+        exception and marks the Task FAILED; it does not write FAILED onto
+        the Document (the stage may do that optionally).
+
         Return ``(StageResult, task_state)``. A non-``None`` ``TaskState``
         overrides only its non-``None`` fields on all child tasks created
         after this completion; ``None`` means full passthrough from the

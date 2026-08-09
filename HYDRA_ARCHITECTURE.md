@@ -146,6 +146,8 @@ Merge rules in `_route_children`:
 
 **Persisting results.** The `Stage` itself stores its `StageResult` on the `Document` at `Document.stage_results[workflow_name][workflow_node_name]`. That way the stage can merge the new result with a previous `StageResult` already present for the same node (for example on retry). The `Executor` still stores the returned `StageResult` on the `Task` for routing.
 
+**Prerequisites and exceptions.** A `Stage` may raise (for example `RuntimeError`) when a prerequisite is not met—missing `Task` fields, missing prior `StageResult`s, wrong content type, unreadable body path, and similar hard preconditions. The `Executor` catches that exception, sets `Task.status = FAILED` and `Task.error` to the exception message, and does **not** route children. The `Executor` does **not** write a `FAILED` `StageResult` onto the `Document`; the stage may optionally do that itself before raising or when returning a failed `StageResult`. Prefer raising for unmet prerequisites that are configuration or wiring errors; return `StageResult(status=FAILED)` for recoverable stage failures that should use the retry budget (`RETRYING`).
+
 **Previous stage results.** The `Stage` can read the results of upstream stages that it depends on from `Document.stage_results`. When a `Stage` needs prior results, pass `Workflow.name` and `WorkflowNode.name` through `stage_params` (`params`).
 
 **Blob / file persistence.** Hydra is a distributed system: a `Stage` may run on a remote `Executor` whose local disk is temporary or ephemeral. Any Stage that writes blob files (PDF bodies, HTML, extracted text, etc.) **must** use [fsspec](https://filesystem-spec.readthedocs.io/) for I/O—not bare `open()` / `Path.write_bytes()` against an assumed machine-local path. Local runs may use a local filesystem via fsspec (plain relative paths or `file://`), but the root path **must** be configurable so it can later point at object storage (for example `s3://…`) without code changes. Paths stored in MongoDB should be relative to the process working directory (or otherwise portable), not absolute host-specific paths.
@@ -188,6 +190,10 @@ class Stage(ABC, metaclass=StageMeta):
         Persist (and optionally merge) this run's ``StageResult`` on the
         document under that path using an atomic partial update.
         Never ``.save()`` the whole document.
+
+        Raise if a hard prerequisite is not met; the Executor catches the
+        exception and marks the Task FAILED (it does not write FAILED onto
+        the Document—the stage may do that optionally).
 
         Return ``(StageResult, task_state)``. A non-``None`` ``TaskState``
         overrides only its non-``None`` fields on all child tasks created
@@ -426,7 +432,8 @@ The main loop waits on two kinds of events:
 2. **Stage completions.** When a running stage finishes, in-flight count for that `stage_name` decreases (capacity increases). The executor can then claim more work for that stage. After the `Stage` has atomically updated the `Document` and the `Executor` has stored the returned `StageResult` on the `Task` (the optional `TaskState` from `process` is kept only for routing):
    - on success → run the current node’s `WorkflowBranch`es and enqueue child `Task`s, applying `TaskState` overrides (or inheriting parent fields when `TaskState` is `None`);
    - on stage failure with attempts left → set `Task.status = RETRYING` (later reclaimed as a new attempt);
-   - on stage failure with no attempts left → set `Task.status = FAILED`.
+   - on stage failure with no attempts left → set `Task.status = FAILED`;
+   - if `Stage.process` raises (unmet prerequisites or other exception) → set `Task.status = FAILED` and `Task.error` from the exception; do not write a `FAILED` result onto the `Document` (the stage may have done so optionally); do not route children; do not map the exception onto `RETRYING`.
 
 Until one of those happens, the executor waits (for example via `asyncio.wait` on the set of in-flight stage coroutines plus any wake-up for new queue work). It does not busy-poll beyond that.
 
@@ -468,7 +475,11 @@ class Executor:
     async def execute_task(self, task: Task) -> None:
         """Resolve WorkflowNode → Stage; call Stage.process; persist result;
         route via WorkflowBranch (applying TaskState) or mark
-        RETRYING / FAILED."""
+        RETRYING / FAILED.
+
+        If ``Stage.process`` raises, mark the Task FAILED with the exception
+        message and return without writing to the Document or routing.
+        """
         ...
 ```
 
