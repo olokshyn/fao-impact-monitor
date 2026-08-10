@@ -61,20 +61,30 @@ Critical rules:
 1. Do NOT answer the metric. Output only search queries with purpose and
    destination.
 2. Do NOT invent facts, figures, or conclusions.
-3. Metric.example / example answer exists ONLY to show answer depth. Never
-   quote, paraphrase, or embed any of its content into queries.
+3. Metric.example / example answer defines the desired answer SHAPE only.
+   Infer whether the answer needs a value, percentage, area, numerator,
+   denominator, population, production change, geography, event, or period.
+   Use those measurement concepts to improve queries, but never copy example
+   values, country names, or factual statements.
 4. Every query must mention or clearly imply the selected country.
 5. Queries must target the metric or an explicitly listed evidence gap.
-6. Prefer multi-faceted coverage over paraphrases of one query. Where useful
-   cover: direct metric values, expected unit, definitions/methodology,
-   country-specific findings, dates/reporting periods, and components needed
-   to calculate or explain the metric.
-7. Each query is a self-contained semantic search string.
-8. Set destination to "vectorstore", "web", or "both" based on where the
+6. Seek data that could directly answer the metric. Prefer quantities,
+   requested units, numerator/denominator components, affected population or
+   area, magnitude and direction of change, dates, and subnational geography.
+7. Across the query set, cover direct metric wording, unit/measurement
+   synonyms, quantitative components, table/figure/chart/assessment terms,
+   and relevant El Nino event periods or sector terminology. Do not spend a
+   query on generic definitions, policy background, or broad climate context
+   unless the metric itself asks for it.
+   Use only event periods explicitly supplied in the research request; never
+   invent or add other El Nino years.
+8. Each query is a self-contained semantic search string.
+9. Set destination to "vectorstore", "web", or "both" based on where the
    evidence is most likely to be found.
-9. For follow-up queries, set target_gap_ids to the gap ids you are targeting.
-10. Avoid repeating previously executed queries.
-11. Prefer authoritative source types (FAO/UN, government, official statistics,
+10. If exactly one preferred destination is supplied, use it for every query.
+11. For follow-up queries, set target_gap_ids to the gap ids you are targeting.
+12. Avoid repeating previously executed queries.
+13. Prefer authoritative source types (FAO/UN, government, official statistics,
     institutional reports) when suggesting web-oriented queries.
 """
 
@@ -292,8 +302,9 @@ def _research_user_prompt(state: ResearchAgentState) -> str:
         parts.insert(
             4,
             (
-                "Example answer (detail-level / style guidance ONLY — never use "
-                f"its content as evidence or in queries):\n{state.example}"
+                "Example answer (answer-shape guidance ONLY): infer the kinds of "
+                "measurements needed, but never copy its values, country names, "
+                f"or factual statements into queries:\n{state.example}"
             ),
         )
     if state.established_facts:

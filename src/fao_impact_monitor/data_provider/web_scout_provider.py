@@ -49,7 +49,8 @@ def _content_hash(content: str) -> str:
 
 
 def _source_id(url: str, content: str) -> str:
-    return f"web:{url}:{_content_hash(content)}"
+    # Keep IDs short so claim-extraction LLMs can copy them reliably.
+    return f"web:{_content_hash(url + '\0' + content)}"
 
 
 def map_web_research_result(
@@ -118,7 +119,7 @@ async def run_web_scout_research(
     *,
     include_domains: list[str] | None = None,
     domain_expertise: str | None = None,
-    research_depth: str = "standard",
+    research_depth: str | dict[str, Any] = "standard",
     web_research_fn: WebResearchFn | None = None,
 ) -> WebScoutResearchResult:
     """Run web-scout-ai with native models and return scraped sources only."""

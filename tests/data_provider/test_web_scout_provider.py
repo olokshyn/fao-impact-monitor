@@ -42,6 +42,8 @@ def test_map_accepts_scraped_and_ignores_snippets() -> None:
     mapped = map_web_research_result(result, query="Kenya maize")
     assert len(mapped.sources) == 1
     assert mapped.sources[0].url == "https://fao.org/report.pdf"
+    assert mapped.sources[0].source_id.startswith("web:")
+    assert "https://" not in mapped.sources[0].source_id
     assert mapped.sources[0].content.startswith("Kenya maize")
     assert mapped.snippet_only_count == 1
     assert "Model summary" not in mapped.sources[0].content

@@ -2,7 +2,8 @@
     "name": "El Niño",
     "description": "El Niño is a natural climate pattern in which parts of the tropical Pacific Ocean become unusually warm. It changes weather around the world, causing droughts in some places and heavier rain or flooding in others.",
     "topic": "Droughts and floods caused by El Niño and their impact on agriculture and livelihoods",
-    "data_filter": "evidence related to these specific El Niño events in 1997-98, 2015-16, 2018-19, 2023-24",
+    "data_filter": "evidence related to these specific El Niño events in 1997-98, 2015-16, 2018-19, 2023-24, 2026-27",
+    "report_pdf_template": "{name} - {country}.pdf",
     "data_sources": [
         {
             "source": "FAORepository",
@@ -109,6 +110,414 @@
             "description": "Incident of Hunger or food insecurity during El Niño events since 1997",
             "example": "Between April and September 2024, 2.79 million people faced IPC Phase 3 or worse acute food insecurity",
             "unit": "population size"
+        },
+        {
+            "name": "Food insecurity impact",
+            "description": "Projected impacts on food insecurity; food prices; hunger linked to El Nino 2026",
+            "example": "Expectations of a decline in wheat output to a level below the five‑year average, as an increased likelihood of El Niño‑induced below‑average rainfall and elevated input costs are foreseen to curtail both plantings and yields."
+
+        },
+        {
+            "name": "Irrigated cropland",
+            "description": "Irrigated cropland, share of total cropland (%)",
+            "example": "Less than 10% of crop land used irrigation",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Irrigated crop land; share of total crop land (%)",
+                    "indicator_code": "24280",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Cropland area actually irrigated",
+                    "item_code": "6694",
+                    "element": "Area",
+                    "element_code": "5110",
+                    "unit": "1000 ha",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Land area equipped for irrigation; share in cropland (%)",
+                    "item_code": "6690",
+                    "element": "Share in Cropland",
+                    "element_code": "7252",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Land area actually irrigated",
+                    "item_code": "6616",
+                    "element": "Area",
+                    "element_code": "5110",
+                    "unit": "1000 ha",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Agriculture area actually irrigated",
+                    "item_code": "6611",
+                    "element": "Area",
+                    "element_code": "5110",
+                    "unit": "1000 ha",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Cropfarm households with irrigation system",
+            "description": "Cropfarm households with irrigation system, share of total cropfarm households (%)",
+            "example": "% of cropfarm households used irrigation system",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Crop farm households with irrigation systems; share of total crop farm households (%)",
+                    "indicator_code": "24273",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Agriculture area actually irrigated",
+                    "item_code": "6611",
+                    "element": "Area",
+                    "element_code": "5110",
+                    "unit": "1000 ha",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Inputs: Land use",
+                    "indicator": "Land area actually irrigated",
+                    "item_code": "6616",
+                    "element": "Area",
+                    "element_code": "5110",
+                    "unit": "1000 ha",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Credit obtained by households",
+            "description": "Average amount of credit obtained by households over the year PPP",
+            "example": "To check time series if the amount of credit increases the year after the El Nino events",
+            "unit": "Int$",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Average amount of credit obtained by household over the year; PPP (constant 2011 international USD)",
+                    "indicator_code": "24272",
+                    "element": "Value",
+                    "element_code": "6244",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "Int$",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Investment: Country Investment Statistics Profile",
+                    "indicator": "Credit to Agriculture, Forestry and Fishing; value at constant 2015 USD",
+                    "item_code": "23068",
+                    "element": "Value US$, 2015 prices",
+                    "element_code": "61840",
+                    "unit": "million USD",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Investment: Country Investment Statistics Profile",
+                    "indicator": "Credit to Agriculture, Forestry and Fishing; share of total credit (%)",
+                    "item_code": "23068",
+                    "element": "Share of Total US$, 2015 prices",
+                    "element_code": "61390",
+                    "unit": "%",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Agricultural income",
+            "description": "Agricultural income (livestock, crop, fishery, forestry, agricultural wage), share of total income %",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Agricultural income (livestock, crop, fishery, forestry, ag wage), share of total income (%)",
+                    "indicator_code": "24239",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "R",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Macro-Statistics: Key Indicators",
+                    "indicator": "Agriculture, forestry and fishing value added; share of GDP (%)",
+                    "item_code": "22016",
+                    "element": "Share of GDP US$",
+                    "element_code": "6103",
+                    "unit": "%",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Farm income",
+            "description": "On farm income (livestock, crop, fishery, forestry), share of total income %",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "On-farm income (livestock, crop, fishery, forestry), share of total income (%)",
+                    "indicator_code": "24251",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "R",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Value of Production",
+                    "indicator": "Agriculture gross production value at constant 2014-2016 international dollars",
+                    "item_code": "2051",
+                    "element": "Gross Production Value (constant 2014-2016 thousand I$)",
+                    "element_code": "152",
+                    "unit": "1000 Int$",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Livestock farm households with one ruminant",
+            "description": "Share of livestock farm households with one ruminant",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Share of livestock farm households owning large ruminants (%)",
+                    "indicator_code": "24286",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Share of livestock farm households owning small ruminants (%)",
+                    "indicator_code": "24289",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Production: Crops and livestock products",
+                    "indicator": "Cattle and buffalo stocks",
+                    "item_code": "1746",
+                    "element": "Stocks",
+                    "element_code": "5111",
+                    "unit": "An",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Production: Crops and livestock products",
+                    "indicator": "Sheep and goat stocks",
+                    "item_code": "1749",
+                    "element": "Stocks",
+                    "element_code": "5111",
+                    "unit": "An",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Households with crop or livestock disease-related shocks",
+            "description": "Share of total households that experienced crop or livestock disease-related shocks",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Share of total households that experienced crop or livestock disease-related shocks (%)",
+                    "indicator_code": "24322",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "R",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Share of livestock farm households with at least one animal vaccinated (%)",
+                    "indicator_code": "24290",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "R",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Share of livestock farm households covered by veterinarians or paraprofessionals (%)",
+                    "indicator_code": "24284",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "R",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Production: Production indices",
+                    "indicator": "Crop gross production index (2014-2016 = 100)",
+                    "item_code": "2041",
+                    "element": "Gross Production Index Number (2014-2016 = 100)",
+                    "element_code": "432",
+                    "unit": "index",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Production: Production indices",
+                    "indicator": "Livestock gross production index (2014-2016 = 100)",
+                    "item_code": "2044",
+                    "element": "Gross Production Index Number (2014-2016 = 100)",
+                    "element_code": "432",
+                    "unit": "index",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Households with changed dietary patterns",
+            "description": "Households in which members' dietary patterns changed due to shocks, share of total households affected by shocks",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Households in which members' dietary patterns changed due to shocks, share of total households affected by shocks (%)",
+                    "indicator_code": "24317",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                },
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Food Security and Nutrition Indicators",
+                    "indicator": "Prevalence of moderate or severe food insecurity in the total population (3-year average)",
+                    "item_code": "210091",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "unit": "%",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Households with migrated members",
+            "description": "Households in which member migrated due to shocks, share of total households affected by shocks",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "%",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Rural Livelihoods Indicators",
+                    "indicator": "Households in which members migrated due to shocks, share of total households affected by shocks (%)",
+                    "indicator_code": "24318",
+                    "element": "Value",
+                    "element_code": "6121",
+                    "qualifier_code": "N",
+                    "source_code": "3054",
+                    "unit": "%",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Export value of crop and livestock products",
+            "description": "Export value of crop and livestock products",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "1000 USD",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Trade: Crops and livestock products",
+                    "indicator": "Export value of crops and livestock products",
+                    "item_code": "1882",
+                    "element": "Export value",
+                    "element_code": "5922",
+                    "unit": "1000 USD",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Import value of crop and livestock products",
+            "description": "Import value of crop and livestock products",
+            "example": "To check time series if the share increases or decreases the year after the El Nino events",
+            "unit": "1000 USD",
+            "data_sources": [
+                {
+                    "source": "FAOSTAT",
+                    "dataset": "Trade: Crops and livestock products",
+                    "indicator": "Import value of crops and livestock products",
+                    "item_code": "1882",
+                    "element": "Import value",
+                    "element_code": "5622",
+                    "unit": "1000 USD",
+                    "exclusive": true
+                }
+            ]
         }
     ]
 }

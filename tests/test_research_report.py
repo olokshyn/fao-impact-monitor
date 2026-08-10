@@ -16,6 +16,7 @@ from fao_impact_monitor.agent.researcher_agent import (
     StatementCitation,
 )
 from fao_impact_monitor.data_source.data_source_config import DataSourceConfig
+from fao_impact_monitor.data_source.faostat import FAOSTATDataResult
 from fao_impact_monitor.data_source.world_bank import WorldBankDataResult
 from fao_impact_monitor.metric.metric import Metric
 from fao_impact_monitor.research_report import (
@@ -27,11 +28,13 @@ from fao_impact_monitor.research_report import (
     ensure_research_output_dir,
     format_metric_section,
     format_researcher_result,
+    format_structured_result,
     format_worldbank_result,
     is_worldbank_only,
     list_metric_report_files,
     metric_path,
     metric_report_path,
+    report_pdf_filename,
     select_metrics,
     write_metric_report,
 )
@@ -93,7 +96,7 @@ def test_select_metrics_rejects_out_of_range() -> None:
         select_metrics(metrics, [2])
 
 
-def test_format_worldbank_result_table_and_indicator_ref() -> None:
+def test_format_worldbank_result_plot_and_indicator_ref(tmp_path: Path) -> None:
     result = WorldBankDataResult(
         source="WorldBank",
         title="Agriculture, forestry, and fishing, value added (% of GDP)",
@@ -106,19 +109,76 @@ def test_format_worldbank_result_table_and_indicator_ref() -> None:
         },
         data=pd.DataFrame({"year": [2022, 2023], "value": [21.1, 20.5]}),
     )
-    body, refs = format_worldbank_result([result])
-    assert "| 2022 | 21.1 |" in body
-    assert "| 2023 | 20.5 |" in body
+    body, refs = format_worldbank_result(
+        [result],
+        plot_dir=tmp_path / "plots",
+        plot_stem="gdp",
+    )
+    assert "![Agriculture, forestry" in body
+    assert "| Year | Value |" not in body
+    assert (tmp_path / "plots" / "gdp-worldbank-1.png").is_file()
     assert "NV.AGR.TOTL.ZS" in refs[0]
     assert "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS?locations=KE" in refs[0]
 
 
-def test_metric_report_path_and_defaults() -> None:
-    assert metric_report_path(Path("reports/el-nino-KEN"), 2) == Path(
-        "reports/el-nino-KEN/0002.md"
+def test_format_faostat_result_plot_and_reference(tmp_path: Path) -> None:
+    result = FAOSTATDataResult(
+        source="FAOSTAT",
+        title="Crop and livestock products",
+        url="https://www.fao.org/faostat/en/#data/QCL",
+        citation="cite",
+        metadata={"indicator": "Crop and livestock products", "country_iso3": "KEN"},
+        data=pd.DataFrame(
+            {
+                "year": [2021, 2022, 2023],
+                "value": [3_800_000.0, 4_200_000.0, 4_050_000.0],
+                "item": ["Maize (corn)"] * 3,
+                "element": ["Production"] * 3,
+                "unit": ["t"] * 3,
+                "qualifier": ["National"] * 3,
+            }
+        ),
     )
-    assert default_research_dir("ken") == Path("reports/el-nino-KEN")
-    assert default_research_pdf_path("ken") == Path("reports/el-nino-KEN.pdf")
+
+    body, refs = format_structured_result(
+        [result],
+        plot_dir=tmp_path / "plots",
+        plot_stem="production",
+    )
+
+    assert "![Crop and livestock products — National]" in body
+    assert "| Year | Value |" not in body
+    assert (tmp_path / "plots" / "production-faostat-1.png").is_file()
+    assert "FAOSTAT" in refs[0]
+
+
+def test_metric_report_path_and_defaults() -> None:
+    assert metric_report_path(Path("reports/el-nino/KEN"), 2) == Path(
+        "reports/el-nino/KEN/0002.md"
+    )
+    assert default_research_dir("ken") == Path("reports/el-nino/KEN")
+    assert default_research_dir("ken", use_case=Path("use-cases/custom.json")) == Path(
+        "reports/custom/KEN"
+    )
+    assert default_research_pdf_path("ken") == Path(
+        "reports/el-nino/KEN/El Niño - KEN.pdf"
+    )
+
+
+def test_report_pdf_filename_uses_use_case_template(tmp_path: Path) -> None:
+    use_case = tmp_path / "drought.json"
+    use_case.write_text(
+        (
+            '{"name": "El Niño", '
+            '"report_pdf_template": "{name} - {country}.pdf", '
+            '"metrics": []}'
+        ),
+        encoding="utf-8",
+    )
+    assert report_pdf_filename("eth", use_case=use_case) == "El Niño - ETH.pdf"
+    assert default_research_pdf_path("eth", use_case=use_case) == (
+        Path("reports/drought/ETH/El Niño - ETH.pdf")
+    )
 
 
 def test_write_metric_report(tmp_path: Path) -> None:
@@ -196,14 +256,29 @@ def test_combine_metric_reports_recovers_missing_section_heading(
 def test_build_research_pdf_writes_pdf(tmp_path: Path) -> None:
     reports = tmp_path / "el-nino-KEN"
     reports.mkdir()
+    plots = reports / "plots"
+    plots.mkdir()
+    formatted, _ = format_worldbank_result(
+        [
+            WorldBankDataResult(
+                source="WorldBank",
+                title="Agriculture share of GDP",
+                url="https://data.worldbank.org/indicator/X",
+                citation="cite",
+                metadata={"indicator": "X", "country_iso3": "KEN", "unit": "%"},
+                data=pd.DataFrame({"year": [2022, 2023], "value": [21.1, 20.5]}),
+            )
+        ],
+        plot_dir=plots,
+        plot_stem="gdp",
+    )
     (reports / "0002.md").write_text(
         "# El Nino research - KEN\n\n## 2. Pastureland\n\nSecond body.\n",
         encoding="utf-8",
     )
     (reports / "0001.md").write_text(
         "# El Nino research - KEN\n\n## 1. Cropland\n\n"
-        "**Status:** answered\n\nSome finding.\n\n"
-        "| Year | Value |\n| --- | --- |\n| 2020 | 1 |\n",
+        f"**Status:** answered\n\n{formatted}\n",
         encoding="utf-8",
     )
     output = tmp_path / "el-nino-KEN.pdf"
@@ -215,6 +290,37 @@ def test_build_research_pdf_writes_pdf(tmp_path: Path) -> None:
     # Section titles must survive PDF encoding (xhtml2pdf stores as literal text).
     assert b"Cropland" in pdf_bytes
     assert b"Pastureland" in pdf_bytes
+    assert b"/Subtype /Image" in pdf_bytes
+
+
+def test_build_research_pdf_makes_local_links_clickable(tmp_path: Path) -> None:
+    import pymupdf
+
+    reports = tmp_path / "reports"
+    fao_data = reports / "fao_data"
+    fao_data.mkdir(parents=True)
+    local_pdf = fao_data / "My Doc.pdf"
+    local_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    (reports / "0001.md").write_text(
+        "# Title\n\n## 1. Metric\n\n"
+        "See [local](fao_data/My%20Doc.pdf) and [web](https://example.com/a).\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "out.pdf"
+    build_research_pdf(input_dir=reports, output_path=output)
+
+    from urllib.parse import unquote
+
+    links = [link for page in pymupdf.open(output) for link in page.get_links()]
+    uris = {link.get("uri") for link in links if link.get("uri")}
+    files = {unquote(str(link.get("file"))) for link in links if link.get("file")}
+    assert "https://example.com/a" in uris
+    # Portable relative target (fao_data/ beside report.pdf), not absolute file://.
+    assert "fao_data/My Doc.pdf" in files
+    assert not any(path.startswith("/") for path in files)
+    assert not any(str(uri).startswith("file:") for uri in uris)
+    assert b"/GoToR" not in output.read_bytes()
+    assert str(local_pdf.resolve()).encode() not in output.read_bytes()
 
 
 def test_format_researcher_result_citations() -> None:
@@ -269,6 +375,38 @@ def test_format_researcher_result_citations() -> None:
     assert "answered" in body
     assert "Cropland was affected" in body
     assert refs == ["- [Kenya Report, p. 3](https://fao.org/doc.pdf) (FAORepository)"]
+
+
+def test_format_researcher_result_uses_relative_local_pdf_link() -> None:
+    output = ResearcherOutput(
+        status="answered",
+        country="Somalia",
+        metric_name="Flood impacts",
+        final_summary="Flooding affected farms.",
+        statements=[],
+        claims=[],
+        sources=[
+            SourceReference(
+                source_id="pdf:1",
+                source_type="vectorstore",
+                document_uri="file://fao_data/El%20Ni%C3%B1o%20Plan.pdf",
+                document_name="El Niño Plan",
+                page_number=2,
+                document_source="PdfEvidencePipeline",
+            )
+        ],
+        open_gaps=[],
+        research_iterations=1,
+    )
+
+    _, refs = format_researcher_result(output)
+
+    assert refs == [
+        (
+            "- [El Niño Plan, p. 2](fao_data/El%20Ni%C3%B1o%20Plan.pdf) "
+            "(PdfEvidencePipeline)"
+        )
+    ]
 
 
 def test_format_researcher_result_high_level_gaps_then_findings() -> None:
@@ -338,6 +476,38 @@ def test_format_researcher_result_cannot_answer() -> None:
     assert "gap_001" in body
 
 
+def test_format_researcher_result_separates_answer_and_context() -> None:
+    output = ResearcherOutput(
+        status="answered",
+        country="Kenya",
+        metric_name="Production change",
+        final_summary="unused",
+        statements=[
+            AnswerStatement(
+                statement_id="stmt_001",
+                text="Production declined by 18 percent.",
+                statement_type="answer",
+            ),
+            AnswerStatement(
+                statement_id="stmt_002",
+                text="Average drought duration increased by 3 months.",
+                statement_type="context",
+            ),
+        ],
+        claims=[],
+        sources=[],
+        open_gaps=[],
+        research_iterations=1,
+    )
+
+    body, _refs = format_researcher_result(output)
+
+    assert "### Answer" in body
+    assert "### Context" in body
+    assert body.index("Production declined") < body.index("### Context")
+    assert body.index("### Context") < body.index("drought duration")
+
+
 def test_format_metric_section_and_report() -> None:
     metric = _metric(name="Pastureland")
     section = format_metric_section(
@@ -364,7 +534,15 @@ def test_format_metric_section_and_report() -> None:
 
 def test_el_nino_routing_matches_plan() -> None:
     metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
-    paths = [metric_path(m) for m in metrics]
-    assert paths[0] == "worldbank"
-    assert paths[1] == "worldbank"
-    assert all(p == "researcher" for p in paths[2:])
+    irrigated_index = next(
+        index
+        for index, metric in enumerate(metrics)
+        if metric.name == "Irrigated cropland"
+    )
+
+    assert metric_path(metrics[0]) == "worldbank"
+    assert metric_path(metrics[1]) == "worldbank"
+    assert all(
+        metric_path(metric) == "researcher" for metric in metrics[2:irrigated_index]
+    )
+    assert all(metric_path(metric) == "faostat" for metric in metrics[irrigated_index:])

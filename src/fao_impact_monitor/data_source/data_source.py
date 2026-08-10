@@ -47,10 +47,11 @@ def _ensure_builtin_sources_registered() -> None:
     """Import concrete sources so RegistryMeta has registered them."""
     # Local imports avoid a circular import with Metric → DataSourceConfig.
     from fao_impact_monitor.data_source import fao_repository as _fao_repository
+    from fao_impact_monitor.data_source import faostat as _faostat
     from fao_impact_monitor.data_source import tellus as _tellus
     from fao_impact_monitor.data_source import world_bank as _world_bank
 
-    del _fao_repository, _tellus, _world_bank
+    del _fao_repository, _faostat, _tellus, _world_bank
 
 
 def get_data_source(source: str) -> DataSource:

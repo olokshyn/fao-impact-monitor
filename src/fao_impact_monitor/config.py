@@ -72,6 +72,32 @@ class PdfExtractConfig(BaseSettings):
     save_dir: Path = DATA_DIR / "pdf_markdown"
 
 
+class GeminiConfig(BaseSettings):
+    """Gemini Developer API credentials for the rich-PDF pipeline."""
+
+    model_config = SettingsConfigDict(**_COMMON_SETTINGS)
+
+    api_key: SecretStr = Field(default=SecretStr(""), validation_alias="GEMINI_API_KEY")
+    model: str = "gemini-3.6-flash"
+    request_timeout_seconds: int = Field(default=120, ge=10)
+
+
+class PdfPipelineConfig(BaseSettings):
+    """Settings for the standalone evidence ingestion package."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="PDF_PIPELINE_",
+        **_COMMON_SETTINGS,
+    )
+
+    artifact_dir: Path = DATA_DIR / "pdf_pipeline"
+    render_dpi: int = 180
+    gemini_max_pages: int = 1_000
+    luna_model: str = "openai:openai.gpt-5.6-luna"
+    vector_index_name: str = "pdf_pipeline_vector_index"
+    text_index_name: str = "pdf_pipeline_text_index"
+
+
 class CountryDetectConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="COUNTRY_DETECT_",
@@ -102,6 +128,22 @@ class ResearcherConfig(BaseSettings):
 
     llm_model: str = "openai:openai.gpt-5.6-terra"
     verifier_llm_model: str = "openai:openai.gpt-5.6-luna"
+    visual_llm_model: str = "openai:openai.gpt-5.6-luna"
+    visual_verifier_llm_model: str = "openai:openai.gpt-5.6-luna"
+    use_visual_evidence: bool = True
+    max_visual_chunks_per_iteration: int = 3
+    max_visual_artifacts_per_chunk: int = 2
+    target_pdf_claims_per_metric: int = 10
+    max_web_claims_per_metric: int = 5
+    max_pdf_queries_per_metric: int = 5
+    pdf_results_per_query: int = 20
+    max_pdf_evidence_to_analyze: int = 50
+    claim_extraction_batch_size: int = 5
+    max_claims_per_evidence: int = 3
+    max_web_searches_per_metric: int = 5
+    max_web_depth: int = 2
+    # Retained for environment compatibility; the bounded researcher no longer
+    # uses iterative gap-driven research.
     max_research_iterations: int = 3
     max_queries_per_iteration: int = 5
     vector_results_per_query: int = 8
@@ -178,6 +220,8 @@ class Config(BaseSettings):
     pdf_crawl: PdfCrawlConfig = Field(default_factory=PdfCrawlConfig)
     link_extract: LinkExtractConfig = Field(default_factory=LinkExtractConfig)
     pdf_extract: PdfExtractConfig = Field(default_factory=PdfExtractConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    pdf_pipeline: PdfPipelineConfig = Field(default_factory=PdfPipelineConfig)
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)
     researcher: ResearcherConfig = Field(default_factory=ResearcherConfig)

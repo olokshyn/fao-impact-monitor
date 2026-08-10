@@ -248,6 +248,8 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
             content = messages[1].content
             assert "Kenya" in content
             assert "percent" in content.lower() or "unit" in content.lower()
+            if "Example answer" in content:
+                assert "answer-shape guidance" in content
             if "Open evidence gaps" in content:
                 assert "gap_value" in content
                 assert "Previously executed" in content
@@ -304,6 +306,7 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
     )
     assert len(initial) == 3
     assert all("Kenya" in q.query for q in initial)
+    assert all("99" not in q.query for q in initial)
 
     follow_up = asyncio.run(
         generate_research_queries(

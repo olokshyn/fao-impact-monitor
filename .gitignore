@@ -17,6 +17,9 @@ wheels/
 
 fetched_data/
 
+fao_data/
+faostat_data/
+
 **/.DS_Store
 
 reports/

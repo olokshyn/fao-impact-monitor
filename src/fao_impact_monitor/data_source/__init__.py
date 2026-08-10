@@ -9,13 +9,17 @@ if TYPE_CHECKING:
         FaoRepositoryDataResult,
         FaoRepositoryDataSourceConfig,
     )
+    from .faostat import FAOSTAT, FAOSTATDataResult, FAOSTATDataSourceConfig
     from .tellus import TellusDataSource
     from .world_bank import WorldBank, WorldBankDataResult, WorldBankDataSourceConfig
 
 __all__ = [
+    "FAOSTAT",
     "DataResult",
     "DataSource",
     "DataSourceConfig",
+    "FAOSTATDataResult",
+    "FAOSTATDataSourceConfig",
     "FaoRepository",
     "FaoRepositoryDataResult",
     "FaoRepositoryDataSourceConfig",
@@ -33,6 +37,9 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
         ".fao_repository",
         "FaoRepositoryDataSourceConfig",
     ),
+    "FAOSTAT": (".faostat", "FAOSTAT"),
+    "FAOSTATDataResult": (".faostat", "FAOSTATDataResult"),
+    "FAOSTATDataSourceConfig": (".faostat", "FAOSTATDataSourceConfig"),
     "TellusDataSource": (".tellus", "TellusDataSource"),
     "WorldBank": (".world_bank", "WorldBank"),
     "WorldBankDataResult": (".world_bank", "WorldBankDataResult"),

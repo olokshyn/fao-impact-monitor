@@ -1,39 +1,54 @@
-"""Unit tests for the ResearcherAgent evidence loop."""
+"""Tests for bounded, quantitative, PDF-first research."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+from collections.abc import Sequence
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
+import pytest
 from beanie import PydanticObjectId
 
 from fao_impact_monitor.agent.query_generator_agent import ResearchQuery
 from fao_impact_monitor.agent.researcher_agent import (
     AnswerStatement,
     AnswerStatementList,
+    ClaimUsefulnessList,
+    ClaimUsefulnessVerdict,
     EvidenceClaim,
-    EvidenceGap,
-    EvidenceGapList,
-    EvidenceSufficiency,
     ExtractedClaimCandidate,
     ExtractedClaimList,
-    SourceReference,
+    ResearchState,
+    RetrievedChunk,
     StatementCitation,
-    StatementRepair,
     StatementVerification,
+    VerifiedResearchVisualFact,
+    VisualArtifact,
+    VisualInsightCandidate,
+    VisualInsightList,
+    VisualInsightVerdict,
+    VisualInsightVerdictList,
+    _enrich_visual_chunk,
+    _extract_and_validate_batches,
+    _has_explicit_scope_conflict,
+    _has_only_ineligible_explicit_years,
+    _judge_claim_usefulness,
+    _select_claims,
+    _validate_claim_candidates,
     build_final_summary,
-    build_insufficient_summary,
     classify_researcher_status,
     match_quoted_text,
     normalize_for_quote_match,
     research,
-    resolve_statement_citations,
     statements_have_quantitative_evidence,
 )
 from fao_impact_monitor.config import ResearcherConfig
 from fao_impact_monitor.data_lake.document import DocumentType
 from fao_impact_monitor.data_lake.vectorstore import ChunkHit
+from fao_impact_monitor.data_provider.web_scout_provider import WebSource
 from fao_impact_monitor.data_source.data_source_config import DataSourceConfig
 from fao_impact_monitor.metric.metric import Metric
 
@@ -52,93 +67,132 @@ def _metric() -> Metric:
 
 
 def _hit(
-    *,
+    index: int,
     text: str,
-    url: str = "https://fao.org/kenya-maize.pdf",
-    title: str = "Kenya Maize Report",
-    chunk_index: int = 0,
-    document_id: str | None = None,
-    document_source: str = "FaoRepository",
+    *,
+    countries_iso3: list[str] | None = None,
 ) -> ChunkHit:
     return ChunkHit(
-        document_id=PydanticObjectId(document_id or "507f1f77bcf86cd799439011"),
-        document_url=url,
-        document_title=title,
+        document_id=PydanticObjectId(f"{index + 1:024x}"),
+        document_url=f"file://fao_data/report-{index}.pdf",
+        document_title=f"Report {index}",
         document_meta={},
         document_type=DocumentType.PDF,
-        document_source=document_source,
-        chunk_index=chunk_index,
+        document_source="PdfEvidencePipeline",
+        chunk_index=index,
         chunk_text=text,
-        countries_iso3=["KEN"],
-        score=0.9,
+        countries_iso3=countries_iso3 or ["KEN"],
+        score=1.0 - index / 100,
     )
 
 
 class ScriptedModel:
-    """Fake chat model returning queued structured outputs by schema name."""
-
     def __init__(self, scripts: dict[str, list[Any]]) -> None:
-        self.scripts = {k: list(v) for k, v in scripts.items()}
+        self.scripts = {key: list(values) for key, values in scripts.items()}
         self.calls: list[str] = []
+        self.messages: list[Any] = []
 
-    def with_structured_output(self, schema: Any) -> Any:
+    def with_structured_output(self, schema: Any, **_kwargs: Any) -> Any:
         name = getattr(schema, "__name__", str(schema))
         parent = self
 
-        class _Structured:
-            async def ainvoke(self, _messages: Any) -> Any:
+        class Structured:
+            async def ainvoke(self, messages: Any) -> Any:
                 parent.calls.append(name)
+                parent.messages.append(messages)
                 queue = parent.scripts.get(name, [])
                 if not queue:
                     raise AssertionError(f"No scripted response for {name}")
                 return queue.pop(0)
 
-        return _Structured()
+        return Structured()
 
 
 class FakeVectorStore:
-    def __init__(self, hits_by_query: dict[str, list[ChunkHit]] | None = None) -> None:
-        self.hits_by_query = hits_by_query or {}
-        self.calls: list[str] = []
+    def __init__(self, hits: list[ChunkHit]) -> None:
+        self.hits = hits
+        self.calls: list[dict[str, Any]] = []
 
     async def search(
         self,
         query: str,
         *,
-        countries_iso3: list[str] | None = None,
+        countries_iso3: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> list[ChunkHit]:
-        del countries_iso3, limit
-        self.calls.append(query)
-        return list(self.hits_by_query.get(query, []))
+        self.calls.append(
+            {
+                "query": query,
+                "countries_iso3": countries_iso3,
+                "limit": limit,
+            }
+        )
+        return self.hits[:limit]
 
 
-def _config(
+async def _one_pdf_query(**_kwargs: Any) -> list[ResearchQuery]:
+    return [
+        ResearchQuery(
+            query="Kenya El Nino maize production percentage loss table",
+            purpose="quantitative production evidence",
+            destination="vectorstore",
+        )
+    ]
+
+
+def _config(**overrides: Any) -> ResearcherConfig:
+    values: dict[str, Any] = {
+        "use_visual_evidence": False,
+        "target_pdf_claims_per_metric": 10,
+        "max_web_claims_per_metric": 5,
+        "max_pdf_queries_per_metric": 1,
+        "pdf_results_per_query": 20,
+        "max_pdf_evidence_to_analyze": 50,
+        "claim_extraction_batch_size": 20,
+        "max_claims_per_evidence": 3,
+        "max_web_searches_per_metric": 5,
+        "max_web_depth": 2,
+        "max_answer_verification_retries": 0,
+    }
+    values.update(overrides)
+    return ResearcherConfig(**values)
+
+
+def _candidate(hit: ChunkHit, text: str, *, fit: str) -> ExtractedClaimCandidate:
+    return ExtractedClaimCandidate(
+        source_id=f"vs:{hit.document_id}:{hit.chunk_index}",
+        quoted_text=text,
+        country="",
+        relevance="Answers the requested production-change metric.",
+        answer_fit=fit,  # type: ignore[arg-type]
+        metric_aspects=["production change"],
+    )
+
+
+def _usefulness_verdicts(
+    count: int,
     *,
-    max_research_iterations: int = 2,
-    max_queries_per_iteration: int = 3,
-    vector_results_per_query: int = 5,
-    max_web_queries_per_iteration: int = 3,
-    max_claim_extraction_retries: int = 1,
-    max_answer_verification_retries: int = 1,
-    max_agent_retries: int = 1,
-) -> ResearcherConfig:
-    return ResearcherConfig(
-        max_research_iterations=max_research_iterations,
-        max_queries_per_iteration=max_queries_per_iteration,
-        vector_results_per_query=vector_results_per_query,
-        max_web_queries_per_iteration=max_web_queries_per_iteration,
-        max_claim_extraction_retries=max_claim_extraction_retries,
-        max_answer_verification_retries=max_answer_verification_retries,
-        max_agent_retries=max_agent_retries,
+    start: int = 1,
+    verdict: str = "direct_answer",
+) -> ClaimUsefulnessList:
+    return ClaimUsefulnessList(
+        verdicts=[
+            ClaimUsefulnessVerdict(
+                claim_id=f"claim_{index:03d}",
+                verdict=verdict,  # type: ignore[arg-type]
+                reason="Directly answers the metric.",
+            )
+            for index in range(start, start + count)
+        ]
     )
 
 
 def test_exact_and_normalized_quote_matching() -> None:
     source = "Kenya maize  production\nfell by 12%."
     assert match_quoted_text("Kenya maize  production\nfell by 12%.", source) == "exact"
-    quoted = "Kenya maize production fell by 12%."
-    assert match_quoted_text(quoted, source) == "normalized"
+    assert (
+        match_quoted_text("Kenya maize production fell by 12%.", source) == "normalized"
+    )
     assert match_quoted_text("Kenya maize production rose by 12%.", source) is None
     assert "agriculture" in normalize_for_quote_match("agri-\nculture")
 
@@ -146,1138 +200,635 @@ def test_exact_and_normalized_quote_matching() -> None:
 def test_final_summary_citations_use_document_uri_and_page() -> None:
     statement = AnswerStatement(
         statement_id="stmt_001",
-        text="Kenya maize production fell by 12%.",
+        text="Maize production fell by 12%.",
         supporting_claim_ids=["claim_001"],
-        citations=[],
+        citations=[
+            StatementCitation(
+                document_name="Kenya Maize Report",
+                document_uri="https://fao.org/kenya-maize.pdf",
+                page_number=4,
+            )
+        ],
+    )
+    summary = build_final_summary([statement])
+    assert "Kenya Maize Report, p. 4" in summary
+    assert "https://fao.org/kenya-maize.pdf" in summary
+
+
+def test_vector_claim_uses_filtered_country_scope_not_quote_text() -> None:
+    quote = "Production declined by 18 percent during the season."
+    hit = _hit(0, quote)
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
+        vector_chunks=[
+            RetrievedChunk(
+                source_id=f"vs:{hit.document_id}:{hit.chunk_index}",
+                document_id=str(hit.document_id),
+                chunk_index=hit.chunk_index,
+                document_url=hit.document_url,
+                document_title=hit.document_title,
+                document_source=hit.document_source,
+                chunk_text=hit.chunk_text,
+                countries_iso3=hit.countries_iso3,
+                retrieval_query="query",
+                score=hit.score,
+                page_number=1,
+            )
+        ],
+    )
+    accepted, rejected = _validate_claim_candidates(
+        state,
+        [_candidate(hit, quote, fit="direct_requested_unit")],
+    )
+    assert len(accepted) == 1
+    assert not rejected
+
+
+def test_web_claim_recovers_mangled_source_id_and_common_country_name() -> None:
+    quote = "Cropland affected by drought reached 18 percent."
+    content = (
+        "Ethiopia drought assessment. "
+        f"{quote} "
+        "National cultivated area was used as the denominator."
+    )
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="ETH",
+        country_name="Federal Democratic Republic of Ethiopia",
+        web_sources=[
+            WebSource(
+                source_id="web:001",
+                url="https://faolex.fao.org/docs/pdf/eth236072.pdf",
+                title="Ethiopia report",
+                content=content,
+                query="Ethiopia cropland",
+                access_date="2026-08-10",
+            )
+        ],
+    )
+    accepted, rejected = _validate_claim_candidates(
+        state,
+        [
+            ExtractedClaimCandidate(
+                # Mimic the live failure mode: extractor drops/mangles the id.
+                source_id=(
+                    "web:https://faolex.fao.org/docs/pdf/eth236072.pdf:deadbeef"
+                ),
+                quoted_text=quote,
+                country="Ethiopia",
+                relevance="Answers cropland impact.",
+                answer_fit="direct_requested_unit",
+                url="https://faolex.fao.org/docs/pdf/eth236072.pdf",
+            )
+        ],
+    )
+    assert not rejected
+    assert len(accepted) == 1
+    assert accepted[0].source_id == "web:001"
+    assert accepted[0].source_type == "web"
+
+
+def test_empty_batch_is_retried_with_exact_copy_instruction() -> None:
+    quote = "Production declined by 18 percent during the season."
+    hit = _hit(0, quote)
+    chunk = RetrievedChunk(
+        source_id=f"vs:{hit.document_id}:{hit.chunk_index}",
+        document_id=str(hit.document_id),
+        chunk_index=hit.chunk_index,
+        document_url=hit.document_url,
+        document_title=hit.document_title,
+        document_source=hit.document_source,
+        chunk_text=hit.chunk_text,
+        countries_iso3=hit.countries_iso3,
+        retrieval_query="query",
+        score=hit.score,
+        page_number=1,
+    )
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
+        vector_chunks=[chunk],
+    )
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [
+                ExtractedClaimList(
+                    claims=[
+                        _candidate(
+                            hit,
+                            "Production increased by 18 percent.",
+                            fit="direct_requested_unit",
+                        )
+                    ]
+                ),
+                ExtractedClaimList(
+                    claims=[_candidate(hit, quote, fit="direct_requested_unit")]
+                ),
+            ]
+        }
+    )
+
+    accepted = asyncio.run(
+        _extract_and_validate_batches(
+            state,
+            model=model,  # type: ignore[arg-type]
+            chunks=[chunk],
+            web_sources=[],
+            batch_size=5,
+            max_claims_per_source=3,
+        )
+    )
+
+    assert [claim.quoted_text for claim in accepted] == [quote]
+    assert len(model.calls) == 2
+    assert "character-for-character" in model.messages[1][1].content
+
+
+def test_quantitative_direct_claims_rank_above_context() -> None:
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
     )
     claims = [
         EvidenceClaim(
-            claim_id="claim_001",
+            claim_id="context",
             source_type="vectorstore",
-            source_id="vs:1:0",
-            quoted_text="Kenya maize production fell by 12%.",
+            source_id="a",
+            quoted_text="The drought affected rural livelihoods.",
             country="Kenya",
-            relevance="direct",
-            url="https://fao.org/kenya-maize.pdf",
-            page_number=1,
-        )
-    ]
-    sources = {
-        "vs:1:0": SourceReference(
-            source_id="vs:1:0",
+            relevance="context",
+            answer_fit="supporting_context",
+            url="a.pdf",
+        ),
+        EvidenceClaim(
+            claim_id="direct",
             source_type="vectorstore",
-            document_uri="https://fao.org/kenya-maize.pdf",
-            document_name="Kenya Maize Report",
-            page_number=1,
-            document_source="FaoRepository",
-        )
-    }
-    citations = resolve_statement_citations(statement, claims, sources)
-    assert citations[0].origin == "FAORepository"
-    summary = build_final_summary(
-        [statement.model_copy(update={"citations": citations})]
-    )
-    assert "Kenya Maize Report, p. 1" in summary
-    assert "(https://fao.org/kenya-maize.pdf)" in summary
-
-
-def test_research_happy_path_vector_only_skips_web() -> None:
-    quote = "In Kenya, maize production fell by 12% in 2016."
-    hit = _hit(text=f"Preface. {quote} Conclusion.")
-    query = "Kenya maize production drought 2016"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        return [
-            ResearchQuery(
-                query=query,
-                purpose="direct value",
-                target_gap_ids=[],
-                destination="vectorstore",
-            )
-        ]
-
-    web_fn = AsyncMock(side_effect=AssertionError("web should not run"))
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=(f"vs:{hit.document_id}:{hit.chunk_index}"),
-                            quoted_text=quote,
-                            country="Kenya",
-                            relevance="metric value",
-                            metric_aspects=["value"],
-                        )
-                    ]
-                )
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="none",
-                            why_required="n/a",
-                            status="closed",
-                        )
-                    ],
-                    established_facts=[quote],
-                )
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="Value present for Kenya.",
-                    next_action="draft_answer",
-                    needs_web=False,
-                )
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text=quote,
-                            supporting_claim_ids=["claim_001"],
-                            metric_aspects=["value"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="Direct quote support.",
-                )
-            ],
-        }
-    )
-    store = FakeVectorStore({query: [hit]})
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=store,  # type: ignore[arg-type]
-            config=_config(max_research_iterations=1),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=web_fn,
-        )
-    )
-    assert result.status == "answered"
-    assert web_fn.await_count == 0
-    assert store.calls == [query]
-    assert result.statements[0].supporting_claim_ids == ["claim_001"]
-    assert result.claims[0].match_kind == "exact"
-    assert "Kenya Maize Report, p. 1" in result.final_summary
-    assert result.sources[0].document_uri == hit.document_url
-    claim_ids = {c.claim_id for c in result.claims}
-    source_ids = {s.source_id for s in result.sources}
-    for stmt in result.statements:
-        assert stmt.supporting_claim_ids
-        assert set(stmt.supporting_claim_ids) <= claim_ids
-        for claim in result.claims:
-            if claim.claim_id in stmt.supporting_claim_ids:
-                assert claim.source_id in source_ids
-
-
-def test_follow_up_queries_and_claim_survival_across_iterations() -> None:
-    quote1 = "Kenya experienced a severe drought in 2016."
-    quote2 = "In Kenya, maize production fell by 12% in 2016."
-    hit1 = _hit(text=quote1, chunk_index=0, document_id="507f1f77bcf86cd799439011")
-    hit2 = _hit(text=quote2, chunk_index=1, document_id="507f1f77bcf86cd799439012")
-    q1 = "Kenya drought 2016 agriculture"
-    q2 = "Kenya maize production change 2016 percent"
-
-    calls: list[dict[str, Any]] = []
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        calls.append(kwargs)
-        if len(calls) == 1:
-            return [
-                ResearchQuery(
-                    query=q1,
-                    purpose="context",
-                    target_gap_ids=[],
-                    destination="vectorstore",
-                )
-            ]
-        assert kwargs.get("open_gaps")
-        assert kwargs.get("executed_queries")
-        return [
-            ResearchQuery(
-                query=q2,
-                purpose="metric value",
-                target_gap_ids=["gap_value"],
-                destination="vectorstore",
-            )
-        ]
-
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit1.document_id}:0",
-                            quoted_text=quote1,
-                            country="Kenya",
-                            relevance="context",
-                        )
-                    ]
-                ),
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit2.document_id}:1",
-                            quoted_text=quote2,
-                            country="Kenya",
-                            relevance="value",
-                        )
-                    ]
-                ),
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_value",
-                            description="Missing maize production change value",
-                            why_required="Metric requires percent change",
-                            status="open",
-                            suggested_terms=["maize production"],
-                        )
-                    ],
-                    established_facts=[quote1],
-                ),
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_value",
-                            description="Missing maize production change value",
-                            why_required="Metric requires percent change",
-                            status="closed",
-                        )
-                    ],
-                    established_facts=[quote1, quote2],
-                ),
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=False,
-                    supported_metric_aspects=["context"],
-                    open_gap_ids=["gap_value"],
-                    reasoning="Need the production change value.",
-                    next_action="generate_more_queries",
-                    needs_web=False,
-                ),
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="Value found.",
-                    next_action="draft_answer",
-                    needs_web=False,
-                ),
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text=quote2,
-                            supporting_claim_ids=["claim_001", "claim_002"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="ok",
-                )
-            ],
-        }
-    )
-    store = FakeVectorStore({q1: [hit1], q2: [hit2]})
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=store,  # type: ignore[arg-type]
-            config=_config(max_research_iterations=2),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert len(calls) == 2
-    assert result.status == "answered"
-    assert {c.claim_id for c in result.claims} == {"claim_001", "claim_002"}
-    # claim ids remain stable / sequential
-    assert result.claims[0].claim_id == "claim_001"
-
-
-def test_web_runs_when_needs_web_and_snippets_rejected() -> None:
-    quote = "Official Kenya statistics report a 12% maize decline."
-    q = "Kenya maize official statistics percent"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        iteration = len(kwargs.get("executed_queries") or [])
-        dest = "web" if iteration else "vectorstore"
-        return [
-            ResearchQuery(
-                query=q if not iteration else q + " web",
-                purpose="value",
-                target_gap_ids=[] if not iteration else ["gap_001"],
-                destination=dest,  # type: ignore[arg-type]
-            )
-        ]
-
-    async def web_fn(query: str, **kwargs: Any) -> Any:
-        del kwargs
-        from types import SimpleNamespace
-
-        return SimpleNamespace(
-            scraped=[
-                SimpleNamespace(
-                    url="https://knbs.go.ke/maize",
-                    title="KNBS Maize",
-                    content=quote,
-                )
-            ],
-            snippet_only=[
-                SimpleNamespace(
-                    url="https://spam.example/snippet",
-                    title="spam",
-                    content="Kenya maize...",
-                )
-            ],
-            scrape_failed=[],
-            blocked_by_policy=[],
-            source_http_error=[],
-            scraped_irrelevant=[],
-            bot_detected=[],
-            queries=[SimpleNamespace(query=query)],
-            synthesis="Do not cite this synthesis as evidence.",
-        )
-
-    class PatchingModel(ScriptedModel):
-        def with_structured_output(self, schema: Any) -> Any:
-            name = getattr(schema, "__name__", str(schema))
-            parent = self
-
-            class _Structured:
-                async def ainvoke(self, messages: Any) -> Any:
-                    parent.calls.append(name)
-                    queue = parent.scripts.get(name, [])
-                    if not queue:
-                        raise AssertionError(f"No scripted response for {name}")
-                    item = queue.pop(0)
-                    if name == "ExtractedClaimList":
-                        content = messages[1].content
-                        marker = "source_id="
-                        assert marker in content
-                        sid = content.split(marker, 1)[1].split(" ", 1)[0]
-                        return ExtractedClaimList(
-                            claims=[
-                                ExtractedClaimCandidate(
-                                    source_id=sid,
-                                    quoted_text=quote,
-                                    country="Kenya",
-                                    relevance="official value",
-                                )
-                            ]
-                        )
-                    return item
-
-            return _Structured()
-
-    # Iteration 1 has no new sources so extract is skipped; only one extract
-    # response is needed (iteration 2 after web scrape).
-    model = PatchingModel(
-        {
-            "ExtractedClaimList": [ExtractedClaimList(claims=[])],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="Need official value",
-                            why_required="Metric value missing",
-                            preferred_source_type="web",
-                            status="open",
-                        )
-                    ]
-                ),
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="Need official value",
-                            why_required="Metric value missing",
-                            status="closed",
-                        )
-                    ],
-                    established_facts=[quote],
-                ),
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=False,
-                    supported_metric_aspects=[],
-                    open_gap_ids=["gap_001"],
-                    reasoning="Need web",
-                    next_action="generate_more_queries",
-                    needs_web=True,
-                ),
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="Have official value",
-                    next_action="draft_answer",
-                    needs_web=False,
-                ),
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text=quote,
-                            supporting_claim_ids=["claim_001"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="ok",
-                )
-            ],
-        }
-    )
-
-    store = FakeVectorStore({})
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=store,  # type: ignore[arg-type]
-            config=_config(max_research_iterations=2),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=web_fn,
-        )
-    )
-    assert result.status == "answered"
-    assert result.claims[0].source_type == "web"
-    assert result.sources[0].document_uri == "https://knbs.go.ke/maize"
-    assert "synthesis" not in result.final_summary.lower()
-    assert "spam.example" not in result.final_summary
-
-
-def test_build_insufficient_summary_gaps_then_statements() -> None:
-    summary = build_insufficient_summary(
-        country_name="Kenya",
-        gaps=[
-            EvidenceGap(
-                gap_id="gap_001",
-                description="Missing percent change",
-                why_required="Metric needs a quantitative change",
-                preferred_source_type="web",
-                suggested_terms=["maize production Kenya 2016"],
-                status="open",
-            )
-        ],
-        statements=[
-            AnswerStatement(
-                statement_id="stmt_001",
-                text="Kenya experienced a severe drought in 2016.",
-                supporting_claim_ids=["claim_001"],
-                citations=[
-                    StatementCitation(
-                        document_name="Kenya Report",
-                        document_uri="https://fao.org/doc.pdf",
-                        page_number=2,
-                    )
-                ],
-            )
-        ],
-    )
-    gap_pos = summary.index("### Evidence gaps")
-    findings_pos = summary.index("### Supported findings")
-    assert gap_pos < findings_pos
-    assert "gap_001" in summary
-    assert "preferred source: `web`" in summary
-    assert "Kenya experienced a severe drought" in summary
-    assert "Kenya Report, p. 2" in summary
-    assert "cannot answer" in summary.lower()
-
-
-def test_classify_researcher_status_by_quantitative_content() -> None:
-    qualitative = AnswerStatement(
-        statement_id="stmt_001",
-        text="Heavy rains began in October 1997 and caused severe flooding.",
-        supporting_claim_ids=["claim_001"],
-    )
-    quantitative = AnswerStatement(
-        statement_id="stmt_002",
-        text="More than 35% of cultivated land in the south was completely dry.",
-        supporting_claim_ids=["claim_002"],
-    )
-    assert classify_researcher_status([]) == "cannot_answer"
-    assert classify_researcher_status([qualitative]) == "high_level_answer"
-    assert classify_researcher_status([quantitative]) == "answered"
-    assert classify_researcher_status([qualitative, quantitative]) == "answered"
-    assert not statements_have_quantitative_evidence([qualitative])
-    assert statements_have_quantitative_evidence([quantitative])
-
-
-def test_insufficient_evidence_keeps_supported_statements() -> None:
-    quote = "Kenya experienced a severe drought in 2016."
-    hit = _hit(text=f"Intro. {quote} More text.")
-    query = "Kenya drought 2016 agriculture"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        return [
-            ResearchQuery(
-                query=query,
-                purpose="context",
-                target_gap_ids=[],
-                destination="vectorstore",
-            )
-        ]
-
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:{hit.chunk_index}",
-                            quoted_text=quote,
-                            country="Kenya",
-                            relevance="context",
-                            metric_aspects=["context"],
-                        )
-                    ]
-                )
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="Missing maize production change",
-                            why_required="Need quantitative metric value",
-                            preferred_source_type="web",
-                            suggested_terms=["maize production change"],
-                            status="open",
-                        )
-                    ],
-                    established_facts=[quote],
-                )
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=False,
-                    supported_metric_aspects=["context"],
-                    open_gap_ids=["gap_001"],
-                    reasoning="Context only; value missing.",
-                    next_action="return_insufficient_evidence",
-                    needs_web=False,
-                )
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text=quote,
-                            supporting_claim_ids=["claim_001"],
-                            metric_aspects=["context"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="Supported by claim.",
-                )
-            ],
-        }
-    )
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=FakeVectorStore({query: [hit]}),  # type: ignore[arg-type]
-            config=_config(
-                max_research_iterations=1,
-                max_claim_extraction_retries=0,
-            ),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert result.status == "high_level_answer"
-    assert len(result.statements) == 1
-    assert result.statements[0].text == quote
-    assert result.claims
-    assert quote in result.final_summary
-    assert "### Remaining evidence gaps" in result.final_summary
-    assert "gap_001" in result.final_summary
-
-
-def test_rejects_fabricated_quotes_and_example_leak() -> None:
-    real = "Kenya harvested 3 million tonnes of maize."
-    hit = _hit(text=real)
-    q = "Kenya maize harvest tonnes"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        return [
-            ResearchQuery(
-                query=q,
-                purpose="value",
-                target_gap_ids=[],
-                destination="vectorstore",
-            )
-        ]
-
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text="Kenya maize production fell by 99%",
-                            country="Kenya",
-                            relevance="fabricated",
-                        ),
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text=(
-                                "In Exampleland, maize production fell by 99% "
-                                "according to a fabricated baseline that must "
-                                "never be used as evidence."
-                            ),
-                            country="Kenya",
-                            relevance="example leak",
-                        ),
-                    ]
-                )
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="No valid claims",
-                            why_required="Need evidence",
-                            status="open",
-                        )
-                    ]
-                )
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=False,
-                    supported_metric_aspects=[],
-                    open_gap_ids=["gap_001"],
-                    reasoning="No claims",
-                    next_action="return_insufficient_evidence",
-                    needs_web=False,
-                )
-            ],
-        }
-    )
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=FakeVectorStore({q: [hit]}),  # type: ignore[arg-type]
-            config=_config(
-                max_research_iterations=1,
-                max_claim_extraction_retries=0,
-            ),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert result.status == "cannot_answer"
-    assert result.claims == []
-    assert "cannot answer" in result.final_summary.lower()
-    assert "Exampleland" not in result.final_summary
-
-
-def test_multi_country_chunk_keeps_only_selected_country_claims() -> None:
-    text = (
-        "In Uganda, maize rose by 5%. In Kenya, maize production fell by 12%. "
-        "In Tanzania, maize was stable."
-    )
-    hit = _hit(text=text)
-    q = "Kenya Uganda Tanzania maize production comparison"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        return [
-            ResearchQuery(
-                query=q,
-                purpose="country value",
-                target_gap_ids=[],
-                destination="vectorstore",
-            )
-        ]
-
-    kenya_quote = "In Kenya, maize production fell by 12%."
-    uganda_quote = "In Uganda, maize rose by 5%."
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text=kenya_quote,
-                            country="Kenya",
-                            relevance="selected country",
-                        ),
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text=uganda_quote,
-                            country="Uganda",
-                            relevance="other country",
-                        ),
-                    ]
-                )
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[],
-                    established_facts=[kenya_quote],
-                )
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="Kenya claim enough",
-                    next_action="draft_answer",
-                )
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text=kenya_quote,
-                            supporting_claim_ids=["claim_001"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="ok",
-                )
-            ],
-        }
-    )
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=FakeVectorStore({q: [hit]}),  # type: ignore[arg-type]
-            config=_config(max_research_iterations=1),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert len(result.claims) == 1
-    assert "Kenya" in result.claims[0].quoted_text
-    assert "Uganda" not in result.claims[0].quoted_text
-
-
-def test_statement_repair_and_query_dedup_and_limits() -> None:
-    quote = "In Kenya, maize production fell by an estimated 12% in 2016."
-    hit = _hit(text=quote)
-    q = "Kenya maize estimated production decline 2016"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        # Always return the same query — researcher must not re-execute forever.
-        return [
-            ResearchQuery(
-                query=q,
-                purpose="value",
-                target_gap_ids=[g.gap_id for g in (kwargs.get("open_gaps") or [])],
-                destination="vectorstore",
-            )
-        ]
-
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text=quote,
-                            country="Kenya",
-                            relevance="value",
-                        )
-                    ]
-                )
-            ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[],
-                    established_facts=[quote],
-                )
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="ok",
-                    next_action="draft_answer",
-                )
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text="Kenya maize production fell by 12% in 2016.",
-                            supporting_claim_ids=["claim_001"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="partially_entailed",
-                    unsupported_parts=["certainty"],
-                    reasoning="Must keep estimated",
-                    suggested_revision=quote,
-                ),
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="ok",
-                ),
-            ],
-            "StatementRepair": [
-                StatementRepair(
-                    statement_id="stmt_001",
-                    text=quote,
-                    supporting_claim_ids=["claim_001"],
-                    remove=False,
-                )
-            ],
-        }
-    )
-    store = FakeVectorStore({q: [hit]})
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=store,  # type: ignore[arg-type]
-            config=_config(
-                max_research_iterations=1,
-                max_answer_verification_retries=1,
-            ),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert result.status == "answered"
-    assert "estimated" in result.statements[0].text
-    assert store.calls.count(q) == 1
-
-
-def test_accepts_partially_entailed_after_retries_exhausted() -> None:
-    quote = "In Kenya, maize production fell by an estimated 12% in 2016."
-    hit = _hit(text=f"Preface. {quote} Conclusion.")
-    q = "Kenya maize production drought 2016"
-
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        return [
-            ResearchQuery(
-                query=q,
-                purpose="value",
-                target_gap_ids=[],
-                destination="vectorstore",
-            )
-        ]
-
-    model = ScriptedModel(
-        {
-            "ExtractedClaimList": [
-                ExtractedClaimList(
-                    claims=[
-                        ExtractedClaimCandidate(
-                            source_id=f"vs:{hit.document_id}:0",
-                            quoted_text=quote,
-                            country="Kenya",
-                            relevance="value",
-                        )
-                    ]
-                )
-            ],
-            "EvidenceGapList": [EvidenceGapList(gaps=[], established_facts=[quote])],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="ok",
-                    next_action="draft_answer",
-                )
-            ],
-            "AnswerStatementList": [
-                AnswerStatementList(
-                    statements=[
-                        AnswerStatement(
-                            statement_id="stmt_001",
-                            text="Kenya maize production fell by 12% in 2016.",
-                            supporting_claim_ids=["claim_001"],
-                        )
-                    ]
-                )
-            ],
-            "StatementVerification": [
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="partially_entailed",
-                    unsupported_parts=["certainty"],
-                    reasoning="Needs estimated",
-                    suggested_revision=quote,
-                ),
-                StatementVerification(
-                    statement_id="stmt_001",
-                    verdict="partially_entailed",
-                    unsupported_parts=["certainty"],
-                    reasoning="Still slightly broad",
-                ),
-            ],
-            "StatementRepair": [
-                StatementRepair(
-                    statement_id="stmt_001",
-                    text=quote,
-                    supporting_claim_ids=["claim_001"],
-                    remove=False,
-                )
-            ],
-        }
-    )
-    result = asyncio.run(
-        research(
-            metric=_metric(),
-            country_iso3="KEN",
-            vector_store=FakeVectorStore({q: [hit]}),  # type: ignore[arg-type]
-            config=_config(
-                max_research_iterations=1,
-                max_answer_verification_retries=1,
-            ),
-            model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=AsyncMock(),
-        )
-    )
-    assert result.status == "answered"
-    assert len(result.statements) == 1
-    assert "estimated" in result.statements[0].text
-
-
-def test_web_scout_capped_at_three_and_not_above_generated_queries() -> None:
-    """Web-scout invocations ≤ min(3, generated web queries) this round."""
-    from types import SimpleNamespace
-
-    quote = "Official Kenya statistics report a 12% maize decline."
-    seed_q = "Kenya maize vector seed"
-    web_generated = [
-        ResearchQuery(
-            query=f"Kenya maize web {i}",
-            purpose="value",
-            target_gap_ids=["gap_001"],
-            destination="web",
-        )
-        for i in range(5)
+            source_id="b",
+            quoted_text="Maize production declined by 18 percent.",
+            country="Kenya",
+            relevance="direct result",
+            answer_fit="direct_requested_unit",
+            url="b.pdf",
+        ),
     ]
-    rounds = {"n": 0}
+    assert _select_claims(state, claims, limit=1)[0].claim_id == "direct"
 
-    async def gen_queries(**kwargs: Any) -> list[ResearchQuery]:
-        del kwargs
-        rounds["n"] += 1
-        if rounds["n"] == 1:
-            return [
-                ResearchQuery(
-                    query=seed_q,
-                    purpose="seed",
-                    target_gap_ids=[],
-                    destination="vectorstore",
+
+def test_relevance_judge_separates_answer_context_and_rejection() -> None:
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
+    )
+    claims = [
+        EvidenceClaim(
+            claim_id=f"claim_{index:03d}",
+            source_type="vectorstore",
+            source_id=str(index),
+            quoted_text=text,
+            country="Kenya",
+            relevance="candidate",
+            answer_fit="supporting_context",
+            url="kenya.pdf",
+        )
+        for index, text in enumerate(
+            [
+                "An estimated 100,000 people were displaced.",
+                "Average drought duration increased by 3 months.",
+                "Maize production declined by 18 percent.",
+            ],
+            start=1,
+        )
+    ]
+    model = ScriptedModel(
+        {
+            "ClaimUsefulnessList": [
+                ClaimUsefulnessList(
+                    verdicts=[
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_001",
+                            verdict="reject",
+                            reason="Number concerns displaced people.",
+                        ),
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_002",
+                            verdict="context",
+                            reason="Quantifies a related drought characteristic.",
+                        ),
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_003",
+                            verdict="direct_answer",
+                            reason="Directly reports the requested change.",
+                        ),
+                    ]
                 )
             ]
-        return list(web_generated)
+        }
+    )
 
-    async def web_fn(query: str, **kwargs: Any) -> Any:
-        del kwargs
-        return SimpleNamespace(
-            scraped=[
-                SimpleNamespace(
-                    url=f"https://knbs.go.ke/{normalize_for_quote_match(query)[:20]}",
-                    title="KNBS",
-                    content=quote,
+    accepted = asyncio.run(
+        _judge_claim_usefulness(state, claims, model=model)  # type: ignore[arg-type]
+    )
+
+    assert [claim.claim_id for claim in accepted] == ["claim_002", "claim_003"]
+    assert [claim.statement_type for claim in accepted] == ["context", "answer"]
+
+
+def test_claim_with_only_unsupported_explicit_event_year_is_rejected() -> None:
+    assert _has_only_ineligible_explicit_years("The 2014 map shows affected crops.")
+    assert not _has_only_ineligible_explicit_years(
+        "Published in 2025 using results from the 2023 El Nino event."
+    )
+    assert not _has_only_ineligible_explicit_years(
+        "Floods destroyed 53 percent of cultivated area."
+    )
+
+
+def test_explicit_global_result_cannot_be_localized_by_country_metadata() -> None:
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="SOM",
+        country_name="Federal Republic of Somalia",
+    )
+    quote = "El Nino 1997/98 affected only four percent of the total agricultural area."
+    assert _has_explicit_scope_conflict(
+        state,
+        quote,
+        source_text=(
+            "The cycles dominated by El Nino were associated with more area "
+            "affected by drought at the global agricultural level. "
+            f"{quote}"
+        ),
+    )
+    # Aggregate-total wording is enough even when the nearby chunk omits "global".
+    assert _has_explicit_scope_conflict(
+        state,
+        "affecting only four percent of the total agricultural area.",
+        source_text=(
+            "On the other hand, an El Nino year that takes place during La Nina "
+            "dominance seems to have less impact on crop areas. This could "
+            "explain why El Nino 1997/98 did not produce the impacts anticipated, "
+            "affecting only four percent of the total agricultural area."
+        ),
+    )
+    assert not _has_explicit_scope_conflict(
+        state,
+        "In Somalia, drought affected four percent of the total agricultural area.",
+        source_text=(
+            "In Somalia, drought affected four percent of the total agricultural area."
+        ),
+    )
+    assert not _has_explicit_scope_conflict(
+        state,
+        "Production declined by 18 percent during the season.",
+        source_text="Production declined by 18 percent during the season.",
+    )
+
+
+def test_research_keeps_global_scope_as_context_without_country_attribution() -> None:
+    quote = (
+        "This could explain why El Nino 1997/98 did not produce the impacts "
+        "anticipated, affecting only four percent of the total agricultural area."
+    )
+    source_text = (
+        "The cycles dominated by El Nino were associated with more area affected "
+        "by drought at the global agricultural level. "
+        f"{quote}"
+    )
+    hit = _hit(0, source_text, countries_iso3=["ETH"])
+    bad_statement = (
+        "During the 1997/98 El Nino, 4% of Ethiopia's total agricultural area "
+        "was affected."
+    )
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [
+                ExtractedClaimList(
+                    claims=[_candidate(hit, quote, fit="direct_requested_unit")]
                 )
             ],
+            "AnswerStatementList": [
+                AnswerStatementList(
+                    statements=[
+                        AnswerStatement(
+                            statement_id="stmt_001",
+                            text=bad_statement,
+                            statement_type="answer",
+                            supporting_claim_ids=["claim_001"],
+                        )
+                    ]
+                )
+            ],
+            "StatementVerification": [
+                StatementVerification(
+                    statement_id="stmt_001",
+                    verdict="entailed",
+                    unsupported_parts=[],
+                    reasoning="Should be overridden by geography check.",
+                )
+            ],
+        }
+    )
+
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="ETH",
+            vector_store=FakeVectorStore([hit]),
+            config=_config(target_pdf_claims_per_metric=1),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
+
+    assert len(result.claims) == 1
+    assert result.claims[0].statement_type == "context"
+    assert result.claims[0].quoted_text == quote
+    assert len(result.statements) == 1
+    assert result.statements[0].statement_type == "context"
+    assert "Ethiopia" not in result.statements[0].text
+    assert "four percent of the total agricultural area" in result.statements[0].text
+    assert result.status == "cannot_answer"
+    assert "Ethiopia's total agricultural area" not in result.final_summary
+
+
+def test_research_returns_ten_country_filtered_pdf_claims() -> None:
+    quotes = [
+        f"Maize production declined by {index + 10} percent." for index in range(12)
+    ]
+    hits = [_hit(index, quote) for index, quote in enumerate(quotes)]
+    candidates = [
+        _candidate(hit, quote, fit="direct_requested_unit")
+        for hit, quote in zip(hits, quotes, strict=True)
+    ]
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [ExtractedClaimList(claims=candidates)],
+            "ClaimUsefulnessList": [_usefulness_verdicts(12)],
+            "AnswerStatementList": [AnswerStatementList()],
+        }
+    )
+    store = FakeVectorStore(hits)
+
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=store,
+            config=_config(),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
+
+    assert len(result.claims) == 10
+    assert len(result.statements) == 10
+    assert all(claim.source_type == "vectorstore" for claim in result.claims)
+    assert store.calls == [
+        {
+            "query": "Kenya El Nino maize production percentage loss table",
+            "countries_iso3": ["KEN"],
+            "limit": 20,
+        }
+    ]
+    assert result.open_gaps == []
+    assert result.status == "answered"
+
+
+def test_context_is_retained_but_does_not_mark_metric_answered() -> None:
+    quote = "Average drought duration increased by 3 months."
+    hit = _hit(0, quote)
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [
+                ExtractedClaimList(
+                    claims=[_candidate(hit, quote, fit="supporting_context")]
+                )
+            ],
+            "ClaimUsefulnessList": [
+                ClaimUsefulnessList(
+                    verdicts=[
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_001",
+                            verdict="context",
+                            reason="Relevant drought context, not production change.",
+                        )
+                    ]
+                )
+            ],
+            "AnswerStatementList": [AnswerStatementList()],
+        }
+    )
+
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=FakeVectorStore([hit]),
+            config=_config(),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
+
+    assert result.status == "cannot_answer"
+    assert len(result.statements) == 1
+    assert result.statements[0].statement_type == "context"
+    assert len(result.open_gaps) == 1
+    assert "no evidence directly answers" in result.open_gaps[0].description
+
+
+def test_research_requests_quantitative_pdf_queries_using_example_shape() -> None:
+    captured: dict[str, Any] = {}
+
+    async def capture_queries(**kwargs: Any) -> list[ResearchQuery]:
+        captured.update(kwargs)
+        return await _one_pdf_query()
+
+    model = ScriptedModel({})
+    asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=FakeVectorStore([]),
+            config=_config(max_pdf_queries_per_metric=5),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=capture_queries,
+        )
+    )
+
+    assert captured["country_iso3"] == "KEN"
+    assert captured["preferred_destinations"] == ["vectorstore"]
+    assert captured["min_queries"] == 3
+    assert captured["max_queries"] == 5
+    assert captured["example"] == _metric().example
+    assert "Prioritize quantitative evidence" in captured["explanation"]
+    assert "1997-98, 2015-16, 2018-19, 2023-24, and 2026-27" in captured["explanation"]
+
+
+def test_web_runs_after_ten_pdf_claims_and_appends_five() -> None:
+    pdf_quotes = [
+        f"Maize production declined by {index + 10} percent." for index in range(10)
+    ]
+    hits = [_hit(index, quote) for index, quote in enumerate(pdf_quotes)]
+    pdf_candidates = [
+        _candidate(hit, quote, fit="direct_requested_unit")
+        for hit, quote in zip(hits, pdf_quotes, strict=True)
+    ]
+    web_contents = [
+        (
+            "https://fao.org/web-1",
+            (
+                "Kenya evidence. Maize production declined by 10 percent. "
+                "Maize production declined by 41 percent in another region. "
+                "Maize yield declined by 12 percent."
+            ),
+        ),
+        (
+            "https://un.org/web-2",
+            (
+                "Kenya evidence. Crop losses reached 22 percent. "
+                "The affected-area production loss was 35 percent. "
+                "Yield declined by 16 percent."
+            ),
+        ),
+    ]
+    web_candidates: list[ExtractedClaimCandidate] = []
+    web_quotes = [
+        "Maize production declined by 10 percent.",
+        "Maize production declined by 41 percent in another region.",
+        "Maize yield declined by 12 percent.",
+        "Crop losses reached 22 percent.",
+        "The affected-area production loss was 35 percent.",
+        "Yield declined by 16 percent.",
+    ]
+    for index, quote in enumerate(web_quotes):
+        source_id = "web:001" if index < 3 else "web:002"
+        web_candidates.append(
+            ExtractedClaimCandidate(
+                source_id=source_id,
+                quoted_text=quote,
+                country="Kenya",
+                relevance="quantitative metric evidence",
+                answer_fit="direct_related_measure",
+            )
+        )
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [
+                ExtractedClaimList(claims=pdf_candidates),
+                ExtractedClaimList(claims=web_candidates),
+            ],
+            "ClaimUsefulnessList": [
+                _usefulness_verdicts(10),
+                _usefulness_verdicts(6, start=11),
+            ],
+            "AnswerStatementList": [AnswerStatementList()],
+        }
+    )
+    web_call: dict[str, Any] = {}
+
+    async def fake_web_research(query: str, **kwargs: Any) -> Any:
+        web_call["query"] = query
+        web_call.update(kwargs)
+        return SimpleNamespace(
+            scraped=[
+                SimpleNamespace(url=url, content=content, title=f"Web {index}")
+                for index, (url, content) in enumerate(web_contents)
+            ],
+            queries=[SimpleNamespace(query=f"search {index}") for index in range(5)],
             snippet_only=[],
             scrape_failed=[],
             blocked_by_policy=[],
             source_http_error=[],
-            scraped_irrelevant=[],
             bot_detected=[],
-            queries=[SimpleNamespace(query=query)],
+            scraped_irrelevant=[],
         )
 
-    web_mock = AsyncMock(side_effect=web_fn)
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=FakeVectorStore(hits),
+            config=_config(),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_fn=fake_web_research,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
 
-    class PatchingModel(ScriptedModel):
-        def with_structured_output(self, schema: Any) -> Any:
-            name = getattr(schema, "__name__", str(schema))
-            parent = self
+    assert (
+        len([claim for claim in result.claims if claim.source_type == "vectorstore"])
+        == 10
+    )
+    assert len([claim for claim in result.claims if claim.source_type == "web"]) == 5
+    assert web_call["research_depth"] == {
+        "max_iterations": 2,
+        "queries_first": 3,
+        "queries_followup": 2,
+        "urls_first": 3,
+        "urls_followup": 2,
+        "hub_deepening_cap": 5,
+        "evaluator_extra_prompt": (
+            "Prioritize numerical results that directly answer the metric: "
+            "values, units, numerators, denominators, affected area or "
+            "population, magnitude of change, geography, event and period."
+        ),
+    }
+    assert "numerator, denominator" in web_call["query"]
+    assert "FEWS NET" in web_call["domain_expertise"]
+    assert "FSNAU" in web_call["domain_expertise"]
+    assert result.research_iterations == 2
+    assert len(result.statements) == 14  # one web claim corroborates a PDF finding
+    assert any(len(statement.citations) == 2 for statement in result.statements)
 
-            class _Structured:
-                async def ainvoke(self, messages: Any) -> Any:
-                    parent.calls.append(name)
-                    queue = parent.scripts.get(name, [])
-                    if not queue:
-                        raise AssertionError(f"No scripted response for {name}")
-                    item = queue.pop(0)
-                    if name == "ExtractedClaimList":
-                        content = messages[1].content
-                        if "source_id=" not in content:
-                            return ExtractedClaimList(claims=[])
-                        sid = content.split("source_id=", 1)[1].split(" ", 1)[0]
-                        return ExtractedClaimList(
-                            claims=[
-                                ExtractedClaimCandidate(
-                                    source_id=sid,
-                                    quoted_text=quote,
-                                    country="Kenya",
-                                    relevance="official value",
-                                )
-                            ]
-                        )
-                    return item
 
-            return _Structured()
-
-    model = PatchingModel(
+def test_failed_statement_verification_falls_back_to_exact_claim() -> None:
+    quote = "Maize production declined by 18 percent."
+    hit = _hit(0, quote)
+    model = ScriptedModel(
         {
             "ExtractedClaimList": [
-                ExtractedClaimList(claims=[]),
-                ExtractedClaimList(claims=[]),
+                ExtractedClaimList(
+                    claims=[_candidate(hit, quote, fit="direct_requested_unit")]
+                )
             ],
-            "EvidenceGapList": [
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="Need official value",
-                            why_required="Metric value missing",
-                            preferred_source_type="web",
-                            status="open",
-                        )
-                    ]
-                ),
-                EvidenceGapList(
-                    gaps=[
-                        EvidenceGap(
-                            gap_id="gap_001",
-                            description="Need official value",
-                            why_required="Metric value missing",
-                            status="closed",
-                        )
-                    ],
-                    established_facts=[quote],
-                ),
-            ],
-            "EvidenceSufficiency": [
-                EvidenceSufficiency(
-                    is_sufficient=False,
-                    supported_metric_aspects=[],
-                    open_gap_ids=["gap_001"],
-                    reasoning="Need web",
-                    next_action="generate_more_queries",
-                    needs_web=True,
-                ),
-                EvidenceSufficiency(
-                    is_sufficient=True,
-                    supported_metric_aspects=["value"],
-                    open_gap_ids=[],
-                    reasoning="Have value",
-                    next_action="draft_answer",
-                    needs_web=False,
-                ),
-            ],
+            "ClaimUsefulnessList": [_usefulness_verdicts(1)],
             "AnswerStatementList": [
                 AnswerStatementList(
                     statements=[
                         AnswerStatement(
-                            statement_id="stmt_001",
-                            text=quote,
-                            supporting_claim_ids=["claim_001"],
+                            statement_id="draft",
+                            text="Production collapsed because of El Nino.",
+                            supporting_claim_ids=[f"claim_{1:03d}"],
                         )
                     ]
                 )
             ],
+        }
+    )
+    verifier = ScriptedModel(
+        {
             "StatementVerification": [
                 StatementVerification(
                     statement_id="stmt_001",
-                    verdict="entailed",
-                    unsupported_parts=[],
-                    reasoning="ok",
+                    verdict="insufficient",
+                    reasoning="Unsupported causation.",
                 )
-            ],
+            ]
         }
     )
 
@@ -1285,19 +836,133 @@ def test_web_scout_capped_at_three_and_not_above_generated_queries() -> None:
         research(
             metric=_metric(),
             country_iso3="KEN",
-            vector_store=FakeVectorStore({seed_q: [_hit(text=quote)]}),  # type: ignore[arg-type]
-            config=_config(
-                max_research_iterations=2,
-                max_web_queries_per_iteration=3,
-                max_claim_extraction_retries=0,
-            ),
+            vector_store=FakeVectorStore([hit]),
+            config=_config(target_pdf_claims_per_metric=1),
             model=model,  # type: ignore[arg-type]
-            verifier_model=model,  # type: ignore[arg-type]
-            generate_research_queries_fn=gen_queries,
-            web_research_fn=web_mock,
+            verifier_model=verifier,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
         )
     )
 
-    assert web_mock.await_count == 3
-    assert web_mock.await_count <= len(web_generated)
-    assert result.status == "answered"
+    assert result.statements[0].text == quote
+    assert result.claims[0].quoted_text == quote
+
+
+def test_no_evidence_returns_one_blocking_gap() -> None:
+    model = ScriptedModel({})
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=FakeVectorStore([]),
+            config=_config(),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
+    assert result.status == "cannot_answer"
+    assert len(result.open_gaps) == 1
+    assert "No country-specific evidence" in result.open_gaps[0].description
+
+
+def test_visual_evidence_is_loaded_verified_and_added_as_claim_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fao_impact_monitor.agent.researcher_agent as researcher_module
+
+    image_path = tmp_path / "chart.png"
+    image_bytes = b"test-png-bytes"
+    image_path.write_bytes(image_bytes)
+    artifact = VisualArtifact(
+        artifact_id="region-1",
+        path=str(image_path),
+        sha256=hashlib.sha256(image_bytes).hexdigest(),
+        media_type="image/png",
+        physical_page=2,
+    )
+    chunk = RetrievedChunk(
+        source_id="vs:507f1f77bcf86cd799439011:1",
+        document_id="507f1f77bcf86cd799439011",
+        chunk_index=1,
+        document_url="somalia.pdf",
+        chunk_text="[TARGET SOURCE EVIDENCE] Flood-risk context.",
+        retrieval_query="flood risk",
+        page_number=2,
+        visual_artifacts=[artifact],
+    )
+    state = ResearchState(metric=_metric(), country_iso3="KEN", country_name="Kenya")
+    insight_text = "The chart shows maize production declining by 12 percent."
+    reader = ScriptedModel(
+        {
+            "VisualInsightList": [
+                VisualInsightList(
+                    insights=[
+                        VisualInsightCandidate(
+                            text=insight_text,
+                            artifact_ids=["region-1"],
+                            relevance="metric value",
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    verifier = ScriptedModel(
+        {
+            "VisualInsightVerdictList": [
+                VisualInsightVerdictList(
+                    verdicts=[
+                        VisualInsightVerdict(
+                            insight_index=0,
+                            verdict="entailed",
+                            reasoning="Visible in the chart.",
+                        )
+                    ]
+                )
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        researcher_module,
+        "get_config",
+        lambda: SimpleNamespace(pdf_pipeline=SimpleNamespace(artifact_dir=tmp_path)),
+    )
+
+    asyncio.run(
+        _enrich_visual_chunk(
+            state,
+            chunk,
+            model=reader,  # type: ignore[arg-type]
+            verifier_model=verifier,  # type: ignore[arg-type]
+            max_artifacts=1,
+        )
+    )
+
+    assert chunk.research_visual_facts == [
+        VerifiedResearchVisualFact(text=insight_text, artifact_ids=["region-1"])
+    ]
+    assert match_quoted_text(insight_text, chunk.chunk_text) == "exact"
+    assert state.analyzed_visual_artifact_ids == {"region-1"}
+
+
+def test_quantitative_status_classification() -> None:
+    qualitative = AnswerStatement(statement_id="a", text="Flooding affected farms.")
+    quantitative = AnswerStatement(
+        statement_id="b",
+        text="Flooding affected 20 percent of cropland.",
+    )
+    quantitative_context = AnswerStatement(
+        statement_id="c",
+        text="Average flood duration increased by 20 percent.",
+        statement_type="context",
+    )
+    assert not statements_have_quantitative_evidence([qualitative])
+    assert statements_have_quantitative_evidence([quantitative])
+    assert classify_researcher_status([]) == "cannot_answer"
+    assert classify_researcher_status([qualitative]) == "high_level_answer"
+    assert classify_researcher_status([quantitative]) == "answered"
+    assert classify_researcher_status([quantitative_context]) == "cannot_answer"

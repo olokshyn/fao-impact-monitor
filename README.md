@@ -43,6 +43,15 @@ uv run fao-impact-monitor
 Always use `uv run` for Python commands and scripts so they execute in the project environment.
 Do not use system `python` or `pip`.
 
+Run only the FAOSTAT metrics from the El Niño use case:
+
+```bash
+uv run pipeline research \
+  --country KEN \
+  --use-case use-cases/el-nino.json \
+  --source FAOSTAT
+```
+
 ### Local MongoDB (debug)
 
 For interactive debugging of Atlas Search / Vector Search (`$search`, `$vectorSearch`, `$rankFusion`), start a persistent local Atlas-compatible MongoDB:
