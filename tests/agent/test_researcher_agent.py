@@ -21,6 +21,7 @@ from fao_impact_monitor.agent.researcher_agent import (
     EvidenceClaim,
     ExtractedClaimCandidate,
     ExtractedClaimList,
+    PdfVerifiedVisualFact,
     ResearchState,
     RetrievedChunk,
     StatementCitation,
@@ -39,7 +40,9 @@ from fao_impact_monitor.agent.researcher_agent import (
     _select_claims,
     _validate_claim_candidates,
     build_final_summary,
+    chunk_from_hit,
     classify_researcher_status,
+    is_direct_evidence_claim,
     match_quoted_text,
     normalize_for_quote_match,
     research,
@@ -143,13 +146,13 @@ async def _one_pdf_query(**_kwargs: Any) -> list[ResearchQuery]:
 def _config(**overrides: Any) -> ResearcherConfig:
     values: dict[str, Any] = {
         "use_visual_evidence": False,
-        "target_pdf_claims_per_metric": 10,
+        "target_pdf_claims_per_metric": 20,
         "max_web_claims_per_metric": 5,
         "max_pdf_queries_per_metric": 1,
         "pdf_results_per_query": 20,
         "max_pdf_evidence_to_analyze": 50,
         "claim_extraction_batch_size": 20,
-        "max_claims_per_evidence": 3,
+        "max_claims_per_evidence": 5,
         "max_web_searches_per_metric": 5,
         "max_web_depth": 2,
         "max_answer_verification_retries": 0,
@@ -195,6 +198,113 @@ def test_exact_and_normalized_quote_matching() -> None:
     )
     assert match_quoted_text("Kenya maize production rose by 12%.", source) is None
     assert "agriculture" in normalize_for_quote_match("agri-\nculture")
+
+
+def test_quote_match_survives_pdf_wrap_whitespace_and_hyphen_ranges() -> None:
+    """PDF wraps leave ' \\n' and digit ranges that used to break validation."""
+    # Space before newline must not become a sticky double space.
+    assert (
+        match_quoted_text(
+            "did not produce the impacts anticipated",
+            "did \nnot produce the impacts anticipated",
+        )
+        == "normalized"
+    )
+    assert normalize_for_quote_match("did \nnot") == "did not"
+
+    # Digit ranges across wraps must stay "5-10", not glue into "510".
+    source_range = "contribute to 5–\n10 percent of national annual production"
+    assert (
+        match_quoted_text(
+            "contribute to 5–10 percent of national annual production",
+            source_range,
+        )
+        == "normalized"
+    )
+    assert "5-10" in normalize_for_quote_match(source_range)
+    assert "510" not in normalize_for_quote_match(source_range)
+
+    # Soft hyphen + newline between digits.
+    soft = "5\u00ad\n10 percent"
+    assert match_quoted_text("5-10 percent", soft) == "normalized"
+
+    # Punctuation / dash differences still match via word tokens.
+    assert (
+        match_quoted_text(
+            "affecting only four percent of the total agricultural area.",
+            "affecting only four percent of the total agricultural  area.",
+        )
+        == "normalized"
+    )
+    assert (
+        match_quoted_text(
+            "harvests were well below average, with some areas experiencing "
+            "between 50 and 90 percent crop loss.",
+            "harvests were well below average, with some areas  experiencing "
+            "between 50 and 90 percent crop loss.",
+        )
+        == "normalized"
+    )
+
+
+def test_ingestion_visual_fact_without_artifact_is_validated() -> None:
+    quote = "The chart shows that 35% of cropland was affected."
+    hit = _hit(0, f"[VERIFIED VISUAL FACT]\n{quote}")
+    chunk = chunk_from_hit(hit, "cropland affected percentage chart")
+    chunk.verified_visual_facts = [PdfVerifiedVisualFact(text=quote)]
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
+        vector_chunks=[chunk],
+    )
+
+    accepted, rejected = _validate_claim_candidates(
+        state,
+        [_candidate(hit, quote, fit="direct_requested_unit")],
+    )
+
+    assert rejected == []
+    assert len(accepted) == 1
+    assert accepted[0].evidence_modality == "verified_visual_fact"
+    assert accepted[0].visual_artifact_ids == []
+
+
+def test_chunk_from_pdf_hit_preserves_exact_evidence_provenance() -> None:
+    hit = ChunkHit(
+        document_id=PydanticObjectId("507f1f77bcf86cd799439011"),
+        document_url="file://fao_data/report.pdf",
+        document_title="El Niño report",
+        document_meta={
+            "pipeline": "pdf_pipeline",
+            "evidence_id": "evidence-001",
+            "source_text": "Affected cropland reached 35%.",
+            "physical_pages": [4, 5],
+            "printed_pages": ["2", "3"],
+            "events": [
+                {
+                    "event_id": "el_nino_2015_16",
+                    "relationship": "associated",
+                }
+            ],
+            "verified_visual_facts": [{"text": "The chart labels 35%."}],
+        },
+        document_type=DocumentType.PDF,
+        document_source="PdfEvidencePipeline",
+        chunk_index=3,
+        chunk_text="Retrieval bundle with inherited context.",
+        countries_iso3=["KEN"],
+    )
+
+    chunk = chunk_from_hit(hit, "cropland drought")
+
+    assert chunk.evidence_id == "evidence-001"
+    assert chunk.source_text == "Affected cropland reached 35%."
+    assert chunk.physical_pages == [4, 5]
+    assert chunk.printed_pages == ["2", "3"]
+    assert chunk.events[0].event_id == "el_nino_2015_16"
+    assert chunk.events[0].relationship == "associated"
+    assert chunk.verified_visual_facts[0].text == "The chart labels 35%."
 
 
 def test_final_summary_citations_use_document_uri_and_page() -> None:
@@ -400,6 +510,7 @@ def test_relevance_judge_separates_answer_context_and_rejection() -> None:
                 "An estimated 100,000 people were displaced.",
                 "Average drought duration increased by 3 months.",
                 "Maize production declined by 18 percent.",
+                "Maize production declined severely.",
             ],
             start=1,
         )
@@ -424,6 +535,11 @@ def test_relevance_judge_separates_answer_context_and_rejection() -> None:
                             verdict="direct_answer",
                             reason="Directly reports the requested change.",
                         ),
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_004",
+                            verdict="direct_answer",
+                            reason="Describes the requested change without a value.",
+                        ),
                     ]
                 )
             ]
@@ -436,6 +552,72 @@ def test_relevance_judge_separates_answer_context_and_rejection() -> None:
 
     assert [claim.claim_id for claim in accepted] == ["claim_002", "claim_003"]
     assert [claim.statement_type for claim in accepted] == ["context", "answer"]
+
+
+def test_related_unit_quantitative_metric_claim_is_direct_evidence() -> None:
+    """Metric-subject quantities remain direct answers even in a related unit."""
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="KEN",
+        country_name="Kenya",
+    )
+    claims = [
+        EvidenceClaim(
+            claim_id="claim_001",
+            source_type="vectorstore",
+            source_id="1",
+            quoted_text=(
+                "some areas experiencing between 50 and 90 percent crop loss."
+            ),
+            country="Kenya",
+            relevance="crop loss magnitude for the metric subject",
+            answer_fit="direct_related_measure",
+            url="kenya.pdf",
+        ),
+        EvidenceClaim(
+            claim_id="claim_002",
+            source_type="vectorstore",
+            source_id="2",
+            quoted_text="Average drought duration increased by 3 months.",
+            country="Kenya",
+            relevance="related hazard only",
+            answer_fit="quantitative_proxy",
+            url="kenya.pdf",
+        ),
+    ]
+    model = ScriptedModel(
+        {
+            "ClaimUsefulnessList": [
+                ClaimUsefulnessList(
+                    verdicts=[
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_001",
+                            verdict="context",
+                            reason=(
+                                "Reports crop loss percent rather than the "
+                                "exact requested unit."
+                            ),
+                        ),
+                        ClaimUsefulnessVerdict(
+                            claim_id="claim_002",
+                            verdict="context",
+                            reason="Quantifies a related drought characteristic.",
+                        ),
+                    ]
+                )
+            ]
+        }
+    )
+
+    accepted = asyncio.run(
+        _judge_claim_usefulness(state, claims, model=model)  # type: ignore[arg-type]
+    )
+
+    assert [claim.claim_id for claim in accepted] == ["claim_001", "claim_002"]
+    assert [claim.statement_type for claim in accepted] == ["answer", "context"]
+    assert accepted[0].answer_fit == "direct_related_measure"
+    assert is_direct_evidence_claim(accepted[0])
+    assert not is_direct_evidence_claim(accepted[1])
 
 
 def test_claim_with_only_unsupported_explicit_event_year_is_rejected() -> None:
@@ -558,9 +740,9 @@ def test_research_keeps_global_scope_as_context_without_country_attribution() ->
     assert "Ethiopia's total agricultural area" not in result.final_summary
 
 
-def test_research_returns_ten_country_filtered_pdf_claims() -> None:
+def test_research_returns_twenty_country_filtered_pdf_claims() -> None:
     quotes = [
-        f"Maize production declined by {index + 10} percent." for index in range(12)
+        f"Maize production declined by {index + 10} percent." for index in range(22)
     ]
     hits = [_hit(index, quote) for index, quote in enumerate(quotes)]
     candidates = [
@@ -569,8 +751,14 @@ def test_research_returns_ten_country_filtered_pdf_claims() -> None:
     ]
     model = ScriptedModel(
         {
-            "ExtractedClaimList": [ExtractedClaimList(claims=candidates)],
-            "ClaimUsefulnessList": [_usefulness_verdicts(12)],
+            "ExtractedClaimList": [
+                ExtractedClaimList(claims=candidates[:20]),
+                ExtractedClaimList(claims=candidates[20:]),
+            ],
+            "ClaimUsefulnessList": [
+                _usefulness_verdicts(20),
+                _usefulness_verdicts(2, start=21),
+            ],
             "AnswerStatementList": [AnswerStatementList()],
         }
     )
@@ -589,8 +777,8 @@ def test_research_returns_ten_country_filtered_pdf_claims() -> None:
         )
     )
 
-    assert len(result.claims) == 10
-    assert len(result.statements) == 10
+    assert len(result.claims) == 20
+    assert len(result.statements) == 20
     assert all(claim.source_type == "vectorstore" for claim in result.claims)
     assert store.calls == [
         {
@@ -601,6 +789,13 @@ def test_research_returns_ten_country_filtered_pdf_claims() -> None:
     ]
     assert result.open_gaps == []
     assert result.status == "answered"
+    assert len(result.query_runs) == 1
+    assert result.query_runs[0].destination == "vectorstore"
+    assert result.query_runs[0].query == (
+        "Kenya El Nino maize production percentage loss table"
+    )
+    assert result.query_runs[0].results_returned == 20
+    assert result.query_runs[0].results_accepted == 20
 
 
 def test_context_is_retained_but_does_not_mark_metric_answered() -> None:
@@ -674,6 +869,7 @@ def test_research_requests_quantitative_pdf_queries_using_example_shape() -> Non
     assert captured["min_queries"] == 3
     assert captured["max_queries"] == 5
     assert captured["example"] == _metric().example
+    assert "unit" not in captured
     assert "Prioritize quantitative evidence" in captured["explanation"]
     assert "1997-98, 2015-16, 2018-19, 2023-24, and 2026-27" in captured["explanation"]
 
@@ -748,7 +944,10 @@ def test_web_runs_after_ten_pdf_claims_and_appends_five() -> None:
                 SimpleNamespace(url=url, content=content, title=f"Web {index}")
                 for index, (url, content) in enumerate(web_contents)
             ],
-            queries=[SimpleNamespace(query=f"search {index}") for index in range(5)],
+            queries=[
+                SimpleNamespace(query=f"search {index}", num_results_returned=4)
+                for index in range(5)
+            ],
             snippet_only=[],
             scrape_failed=[],
             blocked_by_policy=[],
@@ -794,6 +993,27 @@ def test_web_runs_after_ten_pdf_claims_and_appends_five() -> None:
     assert result.research_iterations == 2
     assert len(result.statements) == 14  # one web claim corroborates a PDF finding
     assert any(len(statement.citations) == 2 for statement in result.statements)
+    assert [run.destination for run in result.query_runs] == [
+        "vectorstore",
+        "web",
+        "web",
+        "web",
+        "web",
+        "web",
+    ]
+    assert result.query_runs[0].results_returned == 10
+    assert result.query_runs[0].results_accepted == 10
+    assert [run.query for run in result.query_runs[1:]] == [
+        "search 0",
+        "search 1",
+        "search 2",
+        "search 3",
+        "search 4",
+    ]
+    assert all(run.results_returned == 4 for run in result.query_runs[1:])
+    # Scrapes are not attributed per search query; accepted sources land on first.
+    assert result.query_runs[1].results_accepted == 2
+    assert all(run.results_accepted == 0 for run in result.query_runs[2:])
 
 
 def test_failed_statement_verification_falls_back_to_exact_claim() -> None:
@@ -847,6 +1067,68 @@ def test_failed_statement_verification_falls_back_to_exact_claim() -> None:
 
     assert result.statements[0].text == quote
     assert result.claims[0].quoted_text == quote
+
+
+def test_answer_drafting_can_synthesize_multiple_compatible_claims() -> None:
+    first = "Maize production declined by 18 percent."
+    second = "Crop losses reached 24 percent in the eastern region."
+    hit = _hit(0, f"{first} {second}")
+    model = ScriptedModel(
+        {
+            "ExtractedClaimList": [
+                ExtractedClaimList(
+                    claims=[
+                        _candidate(hit, first, fit="direct_requested_unit"),
+                        _candidate(hit, second, fit="direct_related_measure"),
+                    ]
+                )
+            ],
+            "ClaimUsefulnessList": [_usefulness_verdicts(2)],
+            "AnswerStatementList": [
+                AnswerStatementList(
+                    statements=[
+                        AnswerStatement(
+                            statement_id="draft",
+                            text=(
+                                "Maize production declined by 18 percent, while "
+                                "crop losses reached 24 percent in the eastern region."
+                            ),
+                            supporting_claim_ids=["claim_001", "claim_002"],
+                        )
+                    ]
+                )
+            ],
+        }
+    )
+    verifier = ScriptedModel(
+        {
+            "StatementVerification": [
+                StatementVerification(
+                    statement_id="stmt_001",
+                    verdict="entailed",
+                    reasoning="Both quantities and qualifiers are preserved.",
+                )
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        research(
+            metric=_metric(),
+            country_iso3="KEN",
+            vector_store=FakeVectorStore([hit]),
+            config=_config(target_pdf_claims_per_metric=2),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=verifier,  # type: ignore[arg-type]
+            web_research_enabled=False,
+            generate_research_queries_fn=_one_pdf_query,
+        )
+    )
+
+    assert len(result.statements) == 1
+    assert result.statements[0].supporting_claim_ids == ["claim_001", "claim_002"]
+    assert "18 percent" in result.statements[0].text
+    assert "24 percent" in result.statements[0].text
 
 
 def test_no_evidence_returns_one_blocking_gap() -> None:

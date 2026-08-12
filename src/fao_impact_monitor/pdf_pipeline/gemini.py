@@ -245,6 +245,23 @@ visible, title, parent ordinal (or null), level, countries (ISO3 if known), regi
 events, relationship for each event, reporting modes, and page numbers which establish
 scope.
 
+MULTI-COLUMN PAGE FLOW:
+- Many FAO/GIEWS reports use 2 or 3 newspaper-style columns per page. Read each page
+  top-to-bottom within a column, then left-to-right across columns.
+- When a passage ends mid-sentence at the bottom of a column, it continues at the top
+  of the next column on the same page (left→middle→right). That wrap is one continuous
+  section, not a new section.
+- When the rightmost column ends mid-passage, the text continues at the top of the
+  leftmost column on the next page. That wrap is one continuous section, not a new
+  section. Set page_end to the page where the wrapped passage finishes (typically
+  before the next country/region heading).
+- Do not end a country section on the page where its heading appears if its body
+  continues after a column wrap or page break.
+- Orange all-caps regional headings such as "LATIN AMERICA AND THE CARIBBEAN
+  (1 COUNTRY)" or "NORTH AMERICA, EUROPE AND OCEANIA (1 COUNTRY)" are parent
+  sections for the country entries that follow. Nest those countries under the region
+  via parent_ordinal and include the regional title in the child's regions array.
+
 EVENT EXTRACTION IS REQUIRED, NOT OPTIONAL:
 - If a section explicitly says El Nino/El Niño, its events array must not be empty when
   the episode can be resolved from the cited pages or document context.
@@ -277,6 +294,66 @@ to validate the section boundaries. If a heading, continuation, or next-section 
 shows that the candidate boundary is wrong, correct it by at most the supplied adjacent
 page. Otherwise return the candidate boundaries unchanged. Explain the decision briefly
 in boundary_rationale. Do not extract unrelated evidence from an adjacent context page.
+
+MULTI-COLUMN CONTINUATIONS (CRITICAL):
+- Target pages may use 2 or 3 newspaper-style columns. Reading order is top-to-bottom
+  within each column, then left-to-right across columns.
+- Same-page wraps: when a passage ends mid-sentence at the bottom of column 1 or 2,
+  it continues at the top of the next column on the SAME page. Treat that wrap as ONE
+  evidence unit (examples: Myanmar col1→col2; Haiti col2→col3). Never emit an orphan
+  continuation from the next column that lacks the country heading that opened the
+  passage.
+- Page-break wraps: when a passage starts in the rightmost column and is cut by a page
+  break, it continues at the top of the leftmost column on the next page (before any
+  new country/region heading such as Namibia after Mozambique). Treat that wrap as ONE
+  evidence unit.
+- Carry countries, events, assertion_mode, and unit identity from the heading that
+  opened the passage across every column or page wrap.
+- For a multi-page wrapped unit: pages must list every physical page the passage
+  occupies; regions must include one region per occupied page in reading order;
+  continuation_pages must list every page after the first; source_text must be the full
+  continuous exact PDF text in reading order (heading + body across the wrap), not two
+  severed fragments.
+- Example: a Mozambique heading at the bottom of page N's right column whose body
+  finishes at the top of page N+1's left column is a single Mozambique unit with
+  pages [N, N+1], regions for both pages, countries ["MOZ"], and continuation_pages
+  [N+1].
+
+PARENT REGIONAL SECTION HEADINGS (CRITICAL):
+- Orange all-caps regional titles immediately above a country entry (for example
+  "LATIN AMERICA AND THE CARIBBEAN (1 COUNTRY)" above Haiti, or "NORTH AMERICA,
+  EUROPE AND OCEANIA (1 COUNTRY)" above Ukraine) belong to that country unit.
+- Include the exact regional heading text in source_text before the country body, and
+  name that region in unit_description and retrieval_text. Do not invent a region from
+  page geography alone. Narrower orange labels such as "WIDESPREAD LACK OF ACCESS" may
+  be omitted from retrieval focus; the regional section title itself must be fetched.
+
+TABLES:
+- For modality=table (or mixed) units, extract the COMPLETE grid: every column header and
+  every data row. Do not stop after the first value column, and do not truncate mid-table.
+- visual_facts MUST include one atomic fact per data row that names the row label and ALL
+  cell values under their headers. Example format:
+  "Asia: 2024=1 328.9; 2025 est.=1 331.0; 2026 f'cast=1 340.6; Change: 2026 over 2025 (%)=+0.7".
+- source_text MUST contain the exact table title, units, headers, and the full row text for
+  every region/sub-region/commodity shown (Asia through World and wheat/coarse grains/rice),
+  not a partial excerpt that ends mid-row.
+- Preserve hierarchy (region vs sub-region) and never scramble labels across rows.
+
+CHARTS / INFOGRAPHICS:
+- For modality=chart (or mixed cover/highlight graphics), visual_facts MUST be citable
+  quantitative claims—not OCR line dumps or mid-word truncations.
+- Always include the chart title (and subtitle/units when shown) as its own fact.
+- Emit one atomic fact per labelled bar, point, or slice that pairs the category label
+  with its value and units. Include highlighted KPI callouts (e.g. "+1.4%") with what
+  they measure. Example for a three-bar cereal production chart:
+  "Title: Low-Income Food-Deficit Countries cereal production 2026 over 2025";
+  "5-year average = 125.0 million tonnes";
+  "2025 = 127.2 million tonnes";
+  "2026 forecast = 129.0 million tonnes";
+  "Yearly change 2026 over 2025 = +1.4%".
+- Prefer complete axis/category labels and on-bar values over adjacent body-text fragments.
+- Never emit facts like "The first visible line of text reads ..." or strings that end
+  mid-word because a crop or column cut the glyphs.
 
 Return JSON only. First return scope_units that contain direct text establishing country,
 El Nino event/relationship, explicit negation, and reporting mode. Then return semantic
@@ -315,16 +392,39 @@ continuation_pages:[int]}."""
 
 VISUAL_VERIFY_PROMPT = """Verify proposed factual statements against ONLY this visual crop/page.
 Return JSON: {facts:[{text,entailed:boolean}]}. A fact is entailed only when the chart,
-table, map, diagram, legend or visible caption supports it exactly. Reject guessed values.
-Do not use outside knowledge."""
+table, map, diagram, legend or visible caption supports it exactly as a complete, citable
+claim about a title, label, unit, category, value, or trend. Reject guessed values.
+Reject OCR line-dump statements (e.g. "The first/second visible line of text reads ...")
+and incomplete mid-word truncations even if those glyphs appear in the crop. Do not use
+outside knowledge."""
 
 VISUAL_DESCRIBE_PROMPT = """Describe ONLY the attached source visual as atomic factual
-statements. Return JSON: {facts:[{text:string}]}. Summarize what the image visibly shows,
-including its title or subject, axes, units, dates, geography, legend, categories, trends,
-comparisons, and numerical values when legible. Preserve observed, estimated, and forecast
-qualifiers. Do not infer causality or use outside knowledge. Return at least one fact for a
-readable chart, table, map, diagram, or mixed visual. Context is supplied only to identify
-the intended visual; it is not evidence."""
+statements. Return JSON: {facts:[{text:string}]}.
+
+Goal: extract COMPLETE, CITABLE facts a researcher could quote—titles, units, categories,
+and numerical values—not OCR line dumps or truncated text fragments.
+
+NEVER emit facts of the form "The first/second/Nth visible line of text reads ..." or
+strings that end mid-word (e.g. "... crop gr", "... growing co", "re 3)."). If a label is
+cut by the crop edge, either reconstruct the complete label when the rest of the visual
+makes it unambiguous, or omit that fragment entirely.
+
+For charts, bar/line/pie graphics, and cover infographics:
+- Include the chart title (and subtitle/units) as its own fact when legible.
+- Include highlighted KPI callouts with what they measure (e.g. "+1.4% yearly change").
+- Emit one atomic fact per labelled category/series that pairs the category label with its
+  value and units. Example:
+  "Title: Low-Income Food-Deficit Countries cereal production 2026 over 2025";
+  "5-year average = 125.0 million tonnes";
+  "2025 = 127.2 million tonnes";
+  "2026 forecast = 129.0 million tonnes".
+- Prefer complete axis labels and on-bar values over adjacent body-text fragments.
+
+For tables, emit one fact per data row that includes the row label and every column value
+with its header; do not omit later columns or truncate mid-table. Preserve observed,
+estimated, and forecast qualifiers. Do not infer causality or use outside knowledge.
+Return at least one fact for a readable chart, table, map, diagram, or mixed visual.
+Context is supplied only to identify the intended visual; it is not evidence."""
 
 
 class GeminiPdfClient:

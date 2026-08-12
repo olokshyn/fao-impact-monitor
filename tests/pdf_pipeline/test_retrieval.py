@@ -5,19 +5,23 @@ import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
+import pytest
 from beanie import PydanticObjectId
 
 from fao_impact_monitor.config import PdfPipelineConfig
 from fao_impact_monitor.pdf_pipeline.ingest import PdfEvidenceIngestor
 from fao_impact_monitor.pdf_pipeline.models import (
     ArtifactRef,
+    EventContext,
     EvidenceUnit,
     ModelVersions,
     PdfDocumentRecord,
     PromptVersions,
     SourceRegion,
     ValidationResult,
+    VerifiedVisualFact,
 )
 from fao_impact_monitor.pdf_pipeline.retrieval import (
     PdfEvidenceVectorStore,
@@ -47,7 +51,10 @@ def test_hybrid_search_is_scoped_to_pipeline_owned_eligible_records() -> None:
     )
 
 
-def test_visual_search_hit_uses_crop_artifact_path(tmp_path: Path) -> None:
+def test_visual_search_hit_uses_crop_artifact_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     text = "Exact map caption."
     page = ArtifactRef(
         relative_path="sha/pages/page-0002.png",
@@ -65,6 +72,7 @@ def test_visual_search_hit_uses_crop_artifact_path(tmp_path: Path) -> None:
         validator="test",
     )
     unit = EvidenceUnit.model_construct(
+        id=PydanticObjectId("507f1f77bcf86cd799439012"),
         evidence_id="e1",
         document_id=PydanticObjectId("507f1f77bcf86cd799439011"),
         document_sha256="c" * 64,
@@ -85,11 +93,29 @@ def test_visual_search_hit_uses_crop_artifact_path(tmp_path: Path) -> None:
             )
         ],
         physical_pages=[2],
+        printed_pages=["1"],
         source_text=text,
+        verified_visual_facts=[
+            VerifiedVisualFact(
+                fact_id="fact-1",
+                text="The map shows 35% affected.",
+                supporting_region_ids=["r1"],
+                verifier_verdict="entailed",
+                verifier_model="test",
+                verifier_prompt_version="v1",
+            )
+        ],
         unit_description="Map description",
         retrieval_text="Somalia forecast map",
         canonical_evidence_text=text,
         searchable=True,
+        events=[
+            EventContext(
+                event_id="el_nino_2015_16",
+                relationship="associated",
+                origin="explicit",
+            )
+        ],
         extraction_validation=validation,
         eligibility_validation=validation,
         model_versions=ModelVersions(gemini="g", luna="l", titan="t"),
@@ -127,6 +153,21 @@ def test_visual_search_hit_uses_crop_artifact_path(tmp_path: Path) -> None:
     )
     assert store._document_url(unit, document) == (
         "file://fao_data/El%20Ni%C3%B1o%20Plan.pdf"
+    )
+
+    monkeypatch.setattr(
+        PdfDocumentRecord,
+        "get",
+        AsyncMock(return_value=document),
+    )
+    hit = asyncio.run(store._hit(unit, 0.9))
+    assert hit.document_meta["evidence_id"] == "e1"
+    assert hit.document_meta["source_text"] == text
+    assert hit.document_meta["physical_pages"] == [2]
+    assert hit.document_meta["printed_pages"] == ["1"]
+    assert hit.document_meta["events"][0]["event_id"] == "el_nino_2015_16"
+    assert hit.document_meta["verified_visual_facts"][0]["text"] == (
+        "The map shows 35% affected."
     )
 
 

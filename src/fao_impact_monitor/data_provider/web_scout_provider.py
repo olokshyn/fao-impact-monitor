@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -11,6 +12,21 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+_SCHEMA_META_KEYS = frozenset(
+    {
+        "additionalProperties",
+        "default",
+        "description",
+        "enum",
+        "items",
+        "properties",
+        "required",
+        "title",
+        "type",
+    }
+)
+_SCHEMA_ENVELOPE_PATCHED = False
 
 
 class WebScoutProviderError(RuntimeError):
@@ -32,11 +48,19 @@ class WebSource(BaseModel):
     section: str | None = None
 
 
+class WebQueryStat(BaseModel):
+    """One web-scout search query and how many hits the backend returned."""
+
+    query: str
+    results_returned: int = 0
+
+
 class WebScoutResearchResult(BaseModel):
     """Mapped web-scout result containing only inspectable scraped sources."""
 
     sources: list[WebSource] = Field(default_factory=list)
     queries: list[str] = Field(default_factory=list)
+    query_stats: list[WebQueryStat] = Field(default_factory=list)
     snippet_only_count: int = 0
     failed_count: int = 0
 
@@ -51,6 +75,80 @@ def _content_hash(content: str) -> str:
 def _source_id(url: str, content: str) -> str:
     # Keep IDs short so claim-extraction LLMs can copy them reliably.
     return f"web:{_content_hash(url + '\0' + content)}"
+
+
+def _looks_like_json_schema_field(value: Any) -> bool:
+    """True when *value* looks like a JSON Schema property definition."""
+    if not isinstance(value, dict) or "type" not in value:
+        return False
+    return bool(set(value) & (_SCHEMA_META_KEYS - {"type"})) or value.get("type") in {
+        "object",
+        "array",
+        "string",
+        "boolean",
+        "number",
+        "integer",
+        "null",
+    }
+
+
+def unwrap_schema_shaped_instance(data: Any) -> dict[str, Any] | None:
+    """Unwrap instance values nested under a JSON Schema envelope.
+
+    Some Gemini structured-output responses echo the schema and put the real
+    field values under ``properties``. That fails Pydantic validation for
+    web-scout models such as ``CoverageEvaluation``.
+    """
+    if not isinstance(data, dict):
+        return None
+    props = data.get("properties")
+    if data.get("type") != "object" or not isinstance(props, dict) or not props:
+        return None
+    if not any(
+        key in data
+        for key in ("title", "required", "description", "additionalProperties")
+    ):
+        return None
+    if any(_looks_like_json_schema_field(value) for value in props.values()):
+        return None
+    return props
+
+
+def _patch_agents_schema_envelope_validation() -> None:
+    """Make Agents SDK structured-output parsing tolerate schema envelopes.
+
+    Applied in-process so we do not need a web-scout-ai upgrade. Idempotent.
+    """
+    global _SCHEMA_ENVELOPE_PATCHED
+    if _SCHEMA_ENVELOPE_PATCHED:
+        return
+
+    from agents.agent_output import AgentOutputSchema
+    from agents.exceptions import ModelBehaviorError
+
+    original_validate_json = AgentOutputSchema.validate_json
+
+    def validate_json(self: Any, json_str: str) -> Any:
+        try:
+            return original_validate_json(self, json_str)
+        except ModelBehaviorError as exc:
+            try:
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError:
+                raise exc from None
+            unwrapped = unwrap_schema_shaped_instance(parsed)
+            if unwrapped is None:
+                raise
+            logger.warning(
+                "Recovered structured output nested under a JSON Schema "
+                "envelope for %s",
+                self.name(),
+            )
+            return original_validate_json(self, json.dumps(unwrapped))
+
+    AgentOutputSchema.validate_json = validate_json  # type: ignore[method-assign]
+    _SCHEMA_ENVELOPE_PATCHED = True
+    logger.debug("Patched AgentOutputSchema.validate_json for schema envelopes")
 
 
 def map_web_research_result(
@@ -98,17 +196,26 @@ def map_web_research_result(
             )
         )
 
-    query_list: list[str] = []
+    query_stats: list[WebQueryStat] = []
+    seen_queries: set[str] = set()
     for item in getattr(result, "queries", None) or []:
         q = getattr(item, "query", None)
-        if isinstance(q, str) and q.strip():
-            query_list.append(q.strip())
-    if not query_list:
-        query_list = [query]
+        if not isinstance(q, str) or not q.strip():
+            continue
+        text = q.strip()
+        if text in seen_queries:
+            continue
+        seen_queries.add(text)
+        raw_returned = getattr(item, "num_results_returned", None)
+        returned = int(raw_returned) if isinstance(raw_returned, int) else 0
+        query_stats.append(WebQueryStat(query=text, results_returned=returned))
+    if not query_stats:
+        query_stats = [WebQueryStat(query=query, results_returned=len(sources))]
 
     return WebScoutResearchResult(
         sources=sources,
-        queries=query_list,
+        queries=[item.query for item in query_stats],
+        query_stats=query_stats,
         snippet_only_count=len(snippet_only),
         failed_count=sum(len(bucket) for bucket in failed_buckets),
     )
@@ -129,6 +236,9 @@ async def run_web_scout_research(
         except ImportError as exc:  # pragma: no cover - dependency missing
             raise WebScoutProviderError("web-scout-ai is not installed") from exc
         web_research_fn = default_fn
+        # Gemini sometimes returns CoverageEvaluation values nested under a
+        # JSON Schema envelope; unwrap before Agents SDK validation fails.
+        _patch_agents_schema_envelope_validation()
 
     logger.info("WebScout research: query=%r depth=%s", query, research_depth)
     try:

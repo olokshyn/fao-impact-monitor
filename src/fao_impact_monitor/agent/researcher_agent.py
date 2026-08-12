@@ -61,17 +61,23 @@ CLAIM_EXTRACTION_SYSTEM = """\
 You are a claim-extraction agent for evidence-based metric research.
 
 Extract ONLY verbatim quotations from the provided source texts that help
-answer the selected metric.
+answer the selected metric quantitatively.
 
 Critical rules:
-1. Prefer claims that provide quantitative evidence (percentages, hectares,
+1. Extract claims only when they provide quantitative evidence (percentages, hectares,
    tonnes, heads of livestock, production change, area affected, people
-   affected when tied to agricultural impact).
+   affected when tied to agricultural impact). Return no claim for a purely
+   qualitative statement such as "crop losses and infrastructure damage".
 2. Classify answer_fit for every claim as one of:
-   - direct_requested_unit: directly answers the metric in its requested unit
-   - direct_related_measure: directly answers it with a related measurement
-   - quantitative_proxy: a quantitative result that materially informs it
-   - direct_qualitative: a non-quantitative result that directly answers it
+   - direct_requested_unit: quantitatively measures the metric subject in the
+     requested unit (or an explicitly convertible equivalent in the quotation)
+   - direct_related_measure: quantitatively measures the SAME metric subject
+     in a different unit or related measurement form. Prefer this over
+     quantitative_proxy whenever the claim talks about the metric subject
+     itself and reports numbers — exact unit match is NOT required
+   - quantitative_proxy: a quantitative result that does NOT measure the
+     metric subject itself but materially informs it (for example a hazard
+     magnitude such as rainfall deficit when the metric is production impact)
    - supporting_context: relevant hazard, forecast, response, or background
 3. Prefer claims from newer / more recent sources over older ones when both
    are available (more recent publication year, report date, or data period).
@@ -86,8 +92,9 @@ Critical rules:
    Do not require the country name to appear in a vectorstore quotation.
    Web claims still need country context in the supplied web source.
 8. Useful evidence includes the requested measurement, its numerator and
-   denominator, directly convertible component measures, related impact
-   measures, hazard magnitude, event attribution, time period, and geography.
+   denominator, directly convertible component measures, related quantitative
+   measures of the metric subject (any unit), hazard magnitude, event
+   attribution, time period, and geography.
 9. Keep distinct figures or propositions as separate claims, including when
    they occur in the same source. Return no claim for irrelevant sources.
 10. Never use Metric.example or general knowledge as evidence. The example
@@ -101,20 +108,26 @@ You are a strict metric-answer judge. Decide whether each source-validated
 claim can appear as a finding that answers the requested metric.
 
 Classify each claim as:
-- direct_answer: reports the requested subject and measurement in the requested
-  unit or an explicitly equivalent form whose conversion is fully supported by
-  the quotation.
-- context: materially helps interpret the answer but does not directly provide
-  the requested subject and unit. Examples include a quantitative change in a
-  relevant hazard, a related impact measure, or one useful component of the
-  requested measure.
+- direct_answer: quantitatively measures the requested metric subject — either
+  in the requested unit, a convertible equivalent, or another quantitative
+  form that still reports a result for that same subject. Exact unit match
+  with Metric.unit is NOT required when the quotation clearly talks about the
+  metric subject and provides quantitative data (percentages, counts, area,
+  production, yield, livestock, people/households affected when that is the
+  subject, or similar magnitudes).
+- context: materially helps interpret the answer but does NOT itself measure
+  the metric subject. Examples include a quantitative change in a related
+  hazard (rainfall deficit, drought duration), funding or response figures,
+  or background that does not report a result for the metric subject.
 - reject: does not itself answer or quantitatively measure the metric.
 
 For a quantitative metric, reject numbers attached to the wrong subject as
-answers. A related hazard or impact can be context only when it materially
-helps interpret the requested metric. Reject funding, response targets,
-generic methodology, legend categories, regional/general statements without a
-country-specific result, and statements that merely say a value is missing.
+answers. A related hazard can be context only when it materially helps
+interpret the requested metric. A quantitative result about the metric
+subject itself is always direct_answer even when the unit differs from
+Metric.unit. Reject funding, response targets, generic methodology, legend
+categories, regional/general statements without a country-specific result,
+and statements that merely say a value is missing.
 
 Context must still be specific, relevant evidence for the selected metric and
 El Nino event. Do not classify something as context merely because it mentions
@@ -138,20 +151,22 @@ claim.
 ANSWER_SYSTEM = """\
 You are an answer-statement generator for evidence-based metric research.
 
-Write atomic factual statements for the selected metric and country using ONLY
+Write a comprehensive synthesis for the selected metric and country using ONLY
 the validated claims provided. Never use general knowledge or Metric.example
 as factual content. Metric.example is style/depth guidance only.
 
-Each claim is labeled either answer or context. An answer directly provides
-the requested measurement. Context is relevant supporting evidence that must
-remain clearly separate and must not be worded as though it answers the metric.
+Each claim is labeled either answer or context. An answer quantitatively
+measures the metric subject (including related quantitative forms in a
+different unit). Context is relevant supporting evidence that must remain
+clearly separate and must not be worded as though it answers the metric.
 
 Primary goal: answer with QUANTITATIVE data whenever the claims allow —
 percentages, hectares/area, tonnes/production, yield change, livestock heads
 lost, people/households affected when tied to the metric, and other values
-in Metric.unit. Prefer statements that report magnitudes over purely
-narrative descriptions of weather or events ("heavy rains began", "floods
-occurred") when both are available.
+that measure the metric subject (requested unit or a related quantitative
+form). Prefer statements that report magnitudes over purely narrative
+descriptions of weather or events ("heavy rains began", "floods occurred")
+when both are available.
 
 When the claims only partially cover the metric, still emit every statement
 that is supported. Incomplete event coverage is fine — report the events and
@@ -162,10 +177,10 @@ do not invent numbers to fill gaps.
 Critical rules:
 1. Preserve and foreground quantitative information from the claims (include
    the number and unit in the statement text).
-2. Produce exactly one independently verifiable statement per supplied claim;
-   do not omit claims or merge multiple claims into one statement.
-3. Every factual statement must cite its supplied claim_id.
-   Preserve its supplied statement_type exactly.
+2. Cover every supplied claim in at least one independently verifiable
+   statement. Combine compatible claims when that makes the answer clearer.
+3. Every factual statement must cite all claim_ids that support it. Never mix
+   answer and context claims in the same statement.
 4. Preserve all material qualifiers from claims (country, date/period, unit,
    population, geography, uncertainty, observed vs estimated/projected,
    correlation vs causation).
@@ -308,7 +323,8 @@ _QUANTITATIVE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         ),
         (
             r"\d+(?:[.,]\d+)?\s*(?:heads?\b|animals?\b|cattle\b|livestock\b|"
-            r"people\b|farmers?\b|households?\b)"
+            r"people\b|persons?\b|deaths?\b|farmers?\b|households?\b|"
+            r"homes?\b|houses?\b|days?\b|months?\b)"
         ),
     )
 )
@@ -447,6 +463,15 @@ class VerifiedResearchVisualFact(BaseModel):
     verifier_verdict: Literal["entailed"] = "entailed"
 
 
+class PdfEvidenceEvent(BaseModel):
+    event_id: str
+    relationship: str
+
+
+class PdfVerifiedVisualFact(BaseModel):
+    text: str
+
+
 class SourceReference(BaseModel):
     source_id: str
     source_type: Literal["vectorstore", "web"]
@@ -456,6 +481,12 @@ class SourceReference(BaseModel):
     document_name: str
     page_number: int | None = None
     document_source: str | None = None
+    source_text: str | None = None
+    evidence_id: str | None = None
+    physical_pages: list[int] = Field(default_factory=list)
+    printed_pages: list[str] = Field(default_factory=list)
+    events: list[PdfEvidenceEvent] = Field(default_factory=list)
+    verified_visual_facts: list[PdfVerifiedVisualFact] = Field(default_factory=list)
 
 
 class RetrievedChunk(BaseModel):
@@ -470,10 +501,25 @@ class RetrievedChunk(BaseModel):
     retrieval_query: str
     score: float | None = None
     page_number: int | None = None
+    source_text: str | None = None
+    evidence_id: str | None = None
+    physical_pages: list[int] = Field(default_factory=list)
+    printed_pages: list[str] = Field(default_factory=list)
+    events: list[PdfEvidenceEvent] = Field(default_factory=list)
+    verified_visual_facts: list[PdfVerifiedVisualFact] = Field(default_factory=list)
     visual_artifacts: list[VisualArtifact] = Field(default_factory=list)
     research_visual_facts: list[VerifiedResearchVisualFact] = Field(
         default_factory=list
     )
+
+
+class QueryRunStat(BaseModel):
+    """One executed retrieval query and how many results were kept."""
+
+    query: str
+    destination: Literal["vectorstore", "web"]
+    results_returned: int = 0
+    results_accepted: int = 0
 
 
 class ResearcherOutput(BaseModel):
@@ -486,6 +532,7 @@ class ResearcherOutput(BaseModel):
     sources: list[SourceReference] = Field(default_factory=list)
     open_gaps: list[EvidenceGap] = Field(default_factory=list)
     research_iterations: int
+    query_runs: list[QueryRunStat] = Field(default_factory=list)
 
 
 class ResearchState(BaseModel):
@@ -496,6 +543,7 @@ class ResearchState(BaseModel):
     current_queries: list[ResearchQuery] = Field(default_factory=list)
     all_queries: list[ResearchQuery] = Field(default_factory=list)
     executed_queries: list[str] = Field(default_factory=list)
+    query_runs: list[QueryRunStat] = Field(default_factory=list)
     vector_chunks: list[RetrievedChunk] = Field(default_factory=list)
     web_sources: list[WebSource] = Field(default_factory=list)
     validated_claims: list[EvidenceClaim] = Field(default_factory=list)
@@ -529,6 +577,15 @@ def build_chat_model(
     return chat_model
 
 
+_HYPHEN_CHARS = {
+    "\u2010",  # hyphen
+    "\u2011",  # non-breaking hyphen
+    "\u2012",  # figure dash
+    "\u2013",  # en dash
+    "\u2014",  # em dash
+}
+
+
 def normalize_for_quote_match(text: str) -> str:
     """Normalize harmless formatting differences for quotation matching."""
     text = unicodedata.normalize("NFKC", text)
@@ -537,33 +594,63 @@ def normalize_for_quote_match(text: str) -> str:
         "\u2019": "'",
         "\u201c": '"',
         "\u201d": '"',
-        "\u2010": "-",
-        "\u2011": "-",
-        "\u2012": "-",
-        "\u2013": "-",
-        "\u2014": "-",
+        **{char: "-" for char in _HYPHEN_CHARS},
         "\u00ad": "",  # soft hyphen
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
-    # Rejoin hyphenation caused by line wrapping: "agri-\nculture" -> "agriculture"
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n+", " ", text)
-    return text.strip()
+    # Letter hyphenation across wraps: "agri-\nculture" -> "agriculture".
+    # Keep digit ranges: "5-\n10" / "5–\n10" -> "5-10" (not "510").
+    text = re.sub(r"(?<=[A-Za-z])-\s+(?=[A-Za-z])", "", text)
+    text = re.sub(r"(?<=\d)-\s+(?=\d)", "-", text)
+    # Collapse all whitespace (spaces, tabs, newlines) to a single space.
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def quote_word_tokens(text: str) -> list[str]:
+    """Tokenize text into alphanumeric words for punctuation-tolerant matching.
+
+    Whitespace and punctuation (including hyphens) are dropped after the same
+    hyphen/soft-wrap normalization used for substring matching, so PDF wraps
+    like ``did \\nnot`` and ``5–\\n10`` align with cleaned LLM quotations.
+    """
+    normalized = normalize_for_quote_match(text).casefold()
+    return re.findall(r"[a-z0-9]+", normalized)
+
+
+def _words_are_contiguous_subsequence(
+    needle: Sequence[str], haystack: Sequence[str]
+) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    size = len(needle)
+    for start in range(len(haystack) - size + 1):
+        if haystack[start : start + size] == needle:
+            return True
+    return False
 
 
 def match_quoted_text(
     quoted_text: str,
     source_text: str,
 ) -> Literal["exact", "normalized"] | None:
-    """Return match kind if quote exists in source, else None."""
+    """Return match kind if quote exists in source, else None.
+
+    Matching order:
+    1. exact contiguous substring
+    2. whitespace/hyphen-normalized substring
+    3. contiguous word-token list (ignores remaining punctuation)
+    """
     if not quoted_text or not source_text:
         return None
     if quoted_text in source_text:
         return "exact"
     if normalize_for_quote_match(quoted_text) in normalize_for_quote_match(source_text):
+        return "normalized"
+    quote_words = quote_word_tokens(quoted_text)
+    if quote_words and _words_are_contiguous_subsequence(
+        quote_words, quote_word_tokens(source_text)
+    ):
         return "normalized"
     return None
 
@@ -581,6 +668,30 @@ def chunk_from_hit(hit: ChunkHit, retrieval_query: str) -> RetrievedChunk:
         for item in raw_visual_artifacts
         if isinstance(item, dict)
     ]
+    raw_events = hit.document_meta.get("events", [])
+    events = [
+        PdfEvidenceEvent.model_validate(item)
+        for item in raw_events
+        if isinstance(item, dict)
+    ]
+    raw_visual_facts = hit.document_meta.get("verified_visual_facts", [])
+    verified_visual_facts = [
+        PdfVerifiedVisualFact.model_validate(item)
+        for item in raw_visual_facts
+        if isinstance(item, dict)
+    ]
+    physical_pages = [
+        int(page)
+        for page in hit.document_meta.get("physical_pages", [])
+        if isinstance(page, int)
+    ]
+    printed_pages = [
+        str(page)
+        for page in hit.document_meta.get("printed_pages", [])
+        if isinstance(page, (str, int))
+    ]
+    evidence_id = hit.document_meta.get("evidence_id")
+    source_text = hit.document_meta.get("source_text")
     return RetrievedChunk(
         source_id=vector_source_id(doc_id, hit.chunk_index),
         document_id=doc_id,
@@ -593,6 +704,12 @@ def chunk_from_hit(hit: ChunkHit, retrieval_query: str) -> RetrievedChunk:
         retrieval_query=retrieval_query,
         score=hit.score,
         page_number=page_number,
+        source_text=source_text if isinstance(source_text, str) else None,
+        evidence_id=evidence_id if isinstance(evidence_id, str) else None,
+        physical_pages=physical_pages,
+        printed_pages=printed_pages,
+        events=events,
+        verified_visual_facts=verified_visual_facts,
         visual_artifacts=visual_artifacts,
     )
 
@@ -618,6 +735,12 @@ def _source_meta(state: ResearchState) -> dict[str, SourceReference]:
             document_name=chunk.document_title or chunk.document_url,
             page_number=chunk.page_number,
             document_source=chunk.document_source,
+            source_text=chunk.source_text,
+            evidence_id=chunk.evidence_id,
+            physical_pages=list(chunk.physical_pages),
+            printed_pages=list(chunk.printed_pages),
+            events=list(chunk.events),
+            verified_visual_facts=list(chunk.verified_visual_facts),
         )
     for source in state.web_sources:
         refs[source.source_id] = SourceReference(
@@ -627,6 +750,7 @@ def _source_meta(state: ResearchState) -> dict[str, SourceReference]:
             document_name=source.title or source.url,
             page_number=source.page_number,
             document_source=None,
+            source_text=source.content,
         )
     return refs
 
@@ -653,9 +777,14 @@ def _claim_fingerprint(quoted_text: str, source_id: str) -> str:
     return f"{source_id}::{normalize_for_quote_match(quoted_text)}"
 
 
-def _visual_fact_for_quote(
+def _visual_artifact_ids_for_quote(
     state: ResearchState, source_id: str, quoted_text: str
-) -> VerifiedResearchVisualFact | None:
+) -> list[str] | None:
+    """Return artifact ids when the quote is a verified visual fact.
+
+    An empty list is a valid match for ingestion-time facts whose source image
+    was verified upstream but was not materialized as a research artifact.
+    """
     chunk = next(
         (item for item in state.vector_chunks if item.source_id == source_id), None
     )
@@ -670,7 +799,12 @@ def _visual_fact_for_quote(
         None,
     )
     if research_fact is not None:
-        return research_fact
+        return list(research_fact.artifact_ids)
+    if any(
+        match_quoted_text(quoted_text, fact.text) is not None
+        for fact in chunk.verified_visual_facts
+    ):
+        return [item.artifact_id for item in chunk.visual_artifacts]
     for match in re.finditer(
         r"\[(?:RESEARCH-TIME )?VERIFIED VISUAL FACT[^\]]*\]\s*"
         r"(?P<fact>.*?)(?=\n\n\[|\Z)",
@@ -679,10 +813,7 @@ def _visual_fact_for_quote(
     ):
         fact_text = match.group("fact").strip()
         if match_quoted_text(quoted_text, fact_text) is not None:
-            return VerifiedResearchVisualFact(
-                text=fact_text,
-                artifact_ids=[item.artifact_id for item in chunk.visual_artifacts],
-            )
+            return [item.artifact_id for item in chunk.visual_artifacts]
     return None
 
 
@@ -1079,8 +1210,8 @@ def _fallback_pdf_queries(
 ) -> list[ResearchQuery]:
     """Deterministic quantitative queries used if query generation fails."""
     raw = [
-        f"{country_name} El Nino {metric.name}",
-        (f"{country_name} El Nino {metric.name} quantitative value {metric.unit}"),
+        f"{country_name} El Nino {metric.name} quantitative measurements",
+        f"{country_name} El Nino {metric.name} quantitative numerical estimates",
         (
             f"{country_name} El Nino percentage hectares affected area "
             "production yield loss people households livestock"
@@ -1089,7 +1220,10 @@ def _fallback_pdf_queries(
             f"{country_name} El Nino {metric.name} table figure chart "
             "assessment estimate statistics"
         ),
-        (f"{country_name} El Nino {EL_NINO_EVENT_PERIODS} {metric.name} {metric.unit}"),
+        (
+            f"{country_name} El Nino {EL_NINO_EVENT_PERIODS} {metric.name} "
+            "assessment data values"
+        ),
     ]
     return [
         ResearchQuery(
@@ -1150,6 +1284,16 @@ def _contains_quantity(text: str) -> bool:
     return bool(_PERCENT_PATTERN.search(text)) or any(
         pattern.search(text) for pattern in _QUANTITATIVE_PATTERNS
     )
+
+
+def is_direct_evidence_claim(claim: EvidenceClaim) -> bool:
+    """Return whether a claim quantitatively answers the metric subject.
+
+    Direct evidence includes quantitative results for the metric subject in the
+    requested unit or a related quantitative form. Unit mismatch alone does not
+    make a metric-subject claim indirect.
+    """
+    return claim.statement_type == "answer" and _contains_quantity(claim.quoted_text)
 
 
 def _quantitative_focus_excerpts(metric: Metric, text: str) -> str:
@@ -1353,7 +1497,8 @@ async def _judge_claim_usefulness(
         ):
             # Global/aggregate evidence may inform context, but never answers the
             # country metric and must not be localized to the selected country.
-            accepted.append(_as_global_context_claim(claim))
+            if _contains_quantity(claim.quoted_text):
+                accepted.append(_as_global_context_claim(claim))
             continue
         eligible.append(claim)
 
@@ -1397,12 +1542,29 @@ async def _judge_claim_usefulness(
                 reason = verdict.reason.strip() or "does_not_answer_metric"
                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
                 continue
-            if verdict.verdict == "direct_answer":
+            if not _contains_quantity(claim.quoted_text):
+                reason = "non_quantitative_claim"
+                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+                continue
+            extractor_says_direct = claim.answer_fit in {
+                "direct_requested_unit",
+                "direct_related_measure",
+            }
+            # Metric-subject quantitative claims are direct answers even when the
+            # unit differs from Metric.unit. Promote extractor-confirmed direct
+            # fits if the judge was overly unit-strict and returned context.
+            if verdict.verdict == "direct_answer" or (
+                verdict.verdict == "context" and extractor_says_direct
+            ):
                 accepted.append(
                     claim.model_copy(
                         update={
                             "statement_type": "answer",
-                            "answer_fit": "direct_requested_unit",
+                            "answer_fit": (
+                                claim.answer_fit
+                                if extractor_says_direct
+                                else "direct_requested_unit"
+                            ),
                         }
                     )
                 )
@@ -1411,11 +1573,7 @@ async def _judge_claim_usefulness(
                 claim.model_copy(
                     update={
                         "statement_type": "context",
-                        "answer_fit": (
-                            "quantitative_proxy"
-                            if _contains_quantity(claim.quoted_text)
-                            else "supporting_context"
-                        ),
+                        "answer_fit": "quantitative_proxy",
                     }
                 )
             )
@@ -1573,7 +1731,6 @@ async def research(
                 "the example. Use only these eligible El Nino event periods: "
                 f"{EL_NINO_EVENT_PERIODS}."
             ),
-            unit=metric.unit,
             country_name=country_name,
             country_iso3=state.country_iso3,
             example=metric.example,
@@ -1622,6 +1779,7 @@ async def research(
     )
 
     chunk_by_id: dict[str, RetrievedChunk] = {}
+    hits_by_query: dict[str, list[str]] = {}
     for query in pdf_queries:
         try:
             hits = await vector_store.search(
@@ -1631,17 +1789,28 @@ async def research(
             )
         except Exception:
             logger.exception("PDF vector search failed for %r", query.query)
-            continue
+            hits = []
         logger.info(
             "Researcher STAGE=pdf_retrieve query=%r hits=%s",
             query.query,
             len(hits),
         )
+        hit_ids: list[str] = []
         for hit in hits:
             chunk = chunk_from_hit(hit, query.query)
+            hit_ids.append(chunk.source_id)
             previous = chunk_by_id.get(chunk.source_id)
             if previous is None or (chunk.score or 0.0) > (previous.score or 0.0):
                 chunk_by_id[chunk.source_id] = chunk
+        hits_by_query[query.query] = hit_ids
+        state.query_runs.append(
+            QueryRunStat(
+                query=query.query,
+                destination="vectorstore",
+                results_returned=len(hit_ids),
+                results_accepted=0,
+            )
+        )
     state.vector_chunks = sorted(
         chunk_by_id.values(),
         key=lambda chunk: chunk.score or 0.0,
@@ -1688,6 +1857,14 @@ async def research(
         limit=cfg.target_pdf_claims_per_metric,
     )
     state.validated_claims = list(selected_pdf)
+    accepted_pdf_sources = {claim.source_id for claim in selected_pdf}
+    for run in state.query_runs:
+        if run.destination != "vectorstore":
+            continue
+        hit_ids = hits_by_query.get(run.query, [])
+        run.results_accepted = sum(
+            source_id in accepted_pdf_sources for source_id in hit_ids
+        )
     logger.info(
         "Researcher STAGE=pdf_claims candidates=%s answerable=%s selected=%s "
         "quantitative=%s",
@@ -1717,6 +1894,17 @@ async def research(
                 source.model_copy(update={"source_id": f"web:{index:03d}"})
                 for index, source in enumerate(mapped.sources, start=1)
             ]
+            # web-scout does not attribute scraped URLs to individual search
+            # queries; accepted evidence-source counts are filled after selection.
+            for item in mapped.query_stats:
+                state.query_runs.append(
+                    QueryRunStat(
+                        query=item.query,
+                        destination="web",
+                        results_returned=item.results_returned,
+                        results_accepted=0,
+                    )
+                )
             logger.info(
                 "Researcher STAGE=web_retrieve sources=%s searches=%s",
                 len(state.web_sources),
@@ -1747,6 +1935,12 @@ async def research(
             limit=cfg.max_web_claims_per_metric,
         )
         state.validated_claims = [*selected_pdf, *selected_web]
+        accepted_web_sources = len({claim.source_id for claim in selected_web})
+        web_runs = [run for run in state.query_runs if run.destination == "web"]
+        if web_runs:
+            # Scrapes are not linked to individual search queries; record the
+            # accepted source count once so the section does not double-count.
+            web_runs[0].results_accepted = accepted_web_sources
         logger.info(
             "Researcher STAGE=web_claims candidates=%s answerable=%s selected=%s",
             len(web_candidates),
@@ -1784,8 +1978,9 @@ async def research(
                     "directly answers the requested metric."
                 ),
                 why_required=(
-                    "A direct measurement in the requested subject and unit is "
-                    "required to answer."
+                    "A quantitative measurement of the metric subject is "
+                    "required to answer (requested unit or a related "
+                    "quantitative form)."
                 ),
                 preferred_source_type="vectorstore",
                 suggested_terms=[metric.name, country_name, metric.unit],
@@ -2029,7 +2224,9 @@ def _validate_claim_candidates(
                 )
             )
             continue
-        visual_fact = _visual_fact_for_quote(state, source_id, cand.quoted_text)
+        visual_artifact_ids = _visual_artifact_ids_for_quote(
+            state, source_id, cand.quoted_text
+        )
         claim_id = f"claim_{state.next_claim_seq:03d}"
         state.next_claim_seq += 1
         claim = EvidenceClaim(
@@ -2046,11 +2243,9 @@ def _validate_claim_candidates(
             url=meta.document_uri,
             match_kind=match_kind,
             evidence_modality=(
-                "verified_visual_fact" if visual_fact is not None else "text"
+                "verified_visual_fact" if visual_artifact_ids is not None else "text"
             ),
-            visual_artifact_ids=(
-                list(visual_fact.artifact_ids) if visual_fact is not None else []
-            ),
+            visual_artifact_ids=visual_artifact_ids or [],
         )
         if state.metric.example and _example_leaked(
             claim.quoted_text, state.metric.example
@@ -2103,11 +2298,12 @@ async def _draft_and_verify(
     user = (
         f"{_metric_prompt_block(state.metric, state.country_name, state.country_iso3)}"
         f"\n{style}\n\nValidated claims:\n{claims_block}\n\n"
-        "Produce exactly one atomic statement for every listed claim. "
-        "Each statement must cite that claim's claim_id. Do not omit claims or "
-        "combine several claims into one statement. "
-        "Prioritize quantitative findings (numbers + units matching the metric) "
-        "over qualitative narrative alone. "
+        "Produce a comprehensive synthesis that covers every listed claim. "
+        "Combine compatible claims when useful and cite every supporting "
+        "claim_id. Never mix answer and context claims in one statement. "
+        "Prioritize quantitative findings that measure the metric subject "
+        "(requested unit or a related quantitative form) over qualitative "
+        "narrative alone. "
         "Prefer newer / more recent sources over older ones when claims "
         "conflict or overlap."
     )
@@ -2124,51 +2320,78 @@ async def _draft_and_verify(
         drafted = AnswerStatementList()
 
     primary_ids = {claim.claim_id for claim in primary_claims}
-    drafted_by_claim: dict[str, AnswerStatement] = {}
+    claim_by_id = {claim.claim_id: claim for claim in primary_claims}
+    covered_claim_ids: set[str] = set()
+    statements: list[AnswerStatement] = []
+    generated_statement_ids: set[str] = set()
     for item in drafted.statements:
-        supported = [
-            claim_id
-            for claim_id in item.supporting_claim_ids
-            if claim_id in primary_ids
-        ]
-        if len(supported) != 1 or not item.text.strip():
+        supported = list(
+            dict.fromkeys(
+                claim_id
+                for claim_id in item.supporting_claim_ids
+                if claim_id in primary_ids
+            )
+        )
+        if (
+            not supported
+            or not item.text.strip()
+            or any(claim_id in covered_claim_ids for claim_id in supported)
+        ):
             continue
-        claim_id = supported[0]
-        if claim_id in drafted_by_claim:
+        statement_types = {
+            claim_by_id[claim_id].statement_type for claim_id in supported
+        }
+        if len(statement_types) != 1:
             continue
         if state.metric.example and _example_leaked(item.text, state.metric.example):
             continue
-        drafted_by_claim[claim_id] = item
-
-    statements: list[AnswerStatement] = []
-    generated_statement_ids: set[str] = set()
-    claim_by_id = {claim.claim_id: claim for claim in primary_claims}
-    for claim in primary_claims:
-        draft_item = drafted_by_claim.get(claim.claim_id)
         statement_id = f"stmt_{state.next_statement_seq:03d}"
         state.next_statement_seq += 1
-        supporting = [
-            claim.claim_id,
-            *state.corroborating_claim_ids.get(claim.claim_id, []),
-        ]
-        if draft_item is None:
-            statement = AnswerStatement(
+        supporting = list(
+            dict.fromkeys(
+                claim_id
+                for primary_id in supported
+                for claim_id in [
+                    primary_id,
+                    *state.corroborating_claim_ids.get(primary_id, []),
+                ]
+            )
+        )
+        statement = AnswerStatement(
+            statement_id=statement_id,
+            text=item.text.strip(),
+            statement_type=next(iter(statement_types)),
+            supporting_claim_ids=supporting,
+            metric_aspects=list(
+                item.metric_aspects
+                or dict.fromkeys(
+                    aspect
+                    for claim_id in supported
+                    for aspect in claim_by_id[claim_id].metric_aspects
+                )
+            ),
+        )
+        statements.append(statement)
+        generated_statement_ids.add(statement_id)
+        covered_claim_ids.update(supported)
+
+    for claim in primary_claims:
+        if claim.claim_id in covered_claim_ids:
+            continue
+        statement_id = f"stmt_{state.next_statement_seq:03d}"
+        state.next_statement_seq += 1
+        statements.append(
+            AnswerStatement(
                 statement_id=statement_id,
                 text=claim.quoted_text.strip(),
                 statement_type=claim.statement_type,
-                supporting_claim_ids=supporting,
+                supporting_claim_ids=[
+                    claim.claim_id,
+                    *state.corroborating_claim_ids.get(claim.claim_id, []),
+                ],
                 metric_aspects=list(claim.metric_aspects),
             )
-        else:
-            statement = AnswerStatement(
-                statement_id=statement_id,
-                text=draft_item.text.strip(),
-                statement_type=claim.statement_type,
-                supporting_claim_ids=supporting,
-                metric_aspects=list(draft_item.metric_aspects or claim.metric_aspects),
-            )
-            generated_statement_ids.add(statement_id)
-        statements.append(statement)
+        )
     state.draft_statements = statements
     logger.info(
         "Researcher STAGE=draft_answer done draft_statements=%s",
@@ -2177,13 +2400,26 @@ async def _draft_and_verify(
 
     verified: list[AnswerStatement] = []
     for statement in statements:
-        primary_id = statement.supporting_claim_ids[0]
+        primary_statement_claims = [
+            claim_by_id[claim_id]
+            for claim_id in statement.supporting_claim_ids
+            if claim_id in claim_by_id
+        ]
+        primary_id = primary_statement_claims[0].claim_id
         fallback = AnswerStatement(
             statement_id=statement.statement_id,
-            text=claim_by_id[primary_id].quoted_text.strip(),
+            text=" ".join(
+                claim.quoted_text.strip() for claim in primary_statement_claims
+            ),
             statement_type=claim_by_id[primary_id].statement_type,
             supporting_claim_ids=list(statement.supporting_claim_ids),
-            metric_aspects=list(claim_by_id[primary_id].metric_aspects),
+            metric_aspects=list(
+                dict.fromkeys(
+                    aspect
+                    for claim in primary_statement_claims
+                    for aspect in claim.metric_aspects
+                )
+            ),
         )
         if statement.statement_id not in generated_statement_ids:
             verified.append(fallback)
@@ -2399,6 +2635,7 @@ def _finalize(
         sources=source_list,
         open_gaps=[g for g in state.gaps if g.status != "closed"],
         research_iterations=state.research_iteration,
+        query_runs=list(state.query_runs),
     )
     state.output = output
     return output

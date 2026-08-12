@@ -5,23 +5,30 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import markdown
+import pandas as pd
 from pypdf import PdfWriter
 from pypdf.generic import ByteStringObject, DictionaryObject, NameObject
 from xhtml2pdf import pisa
 
 from fao_impact_monitor.agent.researcher_agent import (
-    STATUS_DISPLAY,
+    EvidenceClaim,
+    QueryRunStat,
     ResearcherOutput,
-    StatementCitation,
-    build_status_summary,
+    SourceReference,
     format_source_origin,
+    is_direct_evidence_claim,
 )
 from fao_impact_monitor.data_plot import plot_time_series
+from fao_impact_monitor.data_source.emdat import (
+    EmDatDataResult,
+    national_totals_by_year,
+)
 from fao_impact_monitor.data_source.faostat import FAOSTATDataResult
 from fao_impact_monitor.data_source.world_bank import (
     WorldBankDataResult,
@@ -30,13 +37,20 @@ from fao_impact_monitor.data_source.world_bank import (
 from fao_impact_monitor.metric.metric import Metric
 from fao_impact_monitor.utils.document_uri import markdown_document_target
 
-MetricPath = Literal["worldbank", "faostat", "researcher"]
+MetricPath = Literal["worldbank", "faostat", "emdat", "researcher"]
 
-_STRUCTURED_DATA_SOURCES = {"FAOSTAT", "WorldBank"}
+_STRUCTURED_DATA_SOURCES = {"FAOSTAT", "WorldBank", "EMDAT"}
 
 _METRIC_REPORT_FILENAME = re.compile(r"^\d{4}\.md$")
 _SECTION_HEADING = re.compile(r"^##\s+(\d+)\.\s+(.*\S)\s*$")
+_SEQ_NUMBER = re.compile(r"^Seq Number:\s*(\d+)\s*$")
+_METRIC_INFO_HEADING = "# Metric info"
 _HTML_HREF = re.compile(r'href="([^"]+)"')
+_HTML_TABLE = re.compile(r"<table>.*?</table>", re.DOTALL)
+_HTML_TABLE_ROW = re.compile(r"<tr(?:\s[^>]*)?>(.*?)</tr>", re.DOTALL)
+_HTML_TABLE_HEADER = re.compile(r"<th(?:\s[^>]*)?>(.*?)</th>", re.DOTALL)
+_HTML_TABLE_CELL = re.compile(r"<td(?:\s[^>]*)?>(.*?)</td>", re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]+>")
 _DEFAULT_USE_CASE = Path("use-cases/el-nino.json")
 _DEFAULT_REPORT_PDF_TEMPLATE = "{name} - {country}.pdf"
 
@@ -69,8 +83,20 @@ h3 {
 table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
 th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; }
 th { background: #f3f3f3; }
+table.wide-table { font-size: 7pt; }
+table.wide-table th, table.wide-table td { padding: 2px; }
+table.very-wide-table { font-size: 6pt; }
+table.very-wide-table th, table.very-wide-table td { padding: 1px; }
+table.emdat-table { font-size: 8pt; }
+table.emdat-table th, table.emdat-table td { padding: 3px; }
 a { color: #0645ad; text-decoration: underline; }
 code { font-family: Courier, monospace; font-size: 10pt; }
+pre {
+  font-family: Courier, monospace;
+  font-size: 9pt;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
 """
 
 
@@ -172,14 +198,25 @@ def list_metric_report_files(directory: Path) -> list[Path]:
 def _parse_metric_section(path: Path) -> tuple[int, str, str]:
     """Return ``(section_number, section_title_line, body_markdown)``.
 
-    ``body_markdown`` starts with the ``## N. Title`` heading and keeps the
-    metric's own References block. Extra H1 titles are stripped.
+    New files are ordered by ``Seq Number``. The legacy ``## N.`` heading is
+    still accepted so older report directories remain renderable.
     """
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         raise ValueError(f"Empty metric report: {path}")
 
     lines = text.splitlines()
+    sequence = next(
+        (
+            int(match.group(1))
+            for line in lines
+            if (match := _SEQ_NUMBER.match(line)) is not None
+        ),
+        None,
+    )
+    if sequence is not None:
+        return sequence, f"Metric {sequence}", text
+
     body_start = 0
     if lines[0].startswith("# "):
         body_start = 1
@@ -221,25 +258,25 @@ def _parse_metric_section(path: Path) -> tuple[int, str, str]:
     return section_number, heading, body
 
 
-def combine_metric_reports(files: list[Path]) -> str:
+def combine_metric_reports(
+    files: list[Path],
+    *,
+    title: str = "Research report",
+) -> str:
     """Combine per-metric markdown files into one document.
 
-    - Uses a single top-level ``#`` header (from the first file).
-    - Orders sections by their ``## N.`` number (fallback: filename).
-    - Keeps each metric section intact, including its own ``### References``.
+    - Adds the combined-document title only here, never to metric files.
+    - Orders new sections by ``Seq Number`` (legacy fallback: ``## N.``).
+    - Keeps every metric file otherwise intact.
     """
     if not files:
         raise ValueError("No markdown files to combine")
 
-    title: str | None = None
     parsed: list[tuple[int, str]] = []
     for path in files:
         text = path.read_text(encoding="utf-8").strip()
         if not text:
             continue
-        lines = text.splitlines()
-        if title is None and lines and lines[0].startswith("# "):
-            title = lines[0].rstrip()
         section_number, _heading, body = _parse_metric_section(path)
         if body:
             parsed.append((section_number, body))
@@ -248,7 +285,7 @@ def combine_metric_reports(files: list[Path]) -> str:
         raise ValueError("No markdown sections to combine")
 
     parsed.sort(key=lambda item: item[0])
-    header = title or "# Research report"
+    header = f"# {title.strip() or 'Research report'}"
     return header + "\n\n" + "\n\n".join(body for _, body in parsed).rstrip() + "\n"
 
 
@@ -375,7 +412,7 @@ def markdown_to_pdf(
     sections: list[list[str]] = []
     current: list[str] | None = None
     for line in lines:
-        if _SECTION_HEADING.match(line):
+        if line == _METRIC_INFO_HEADING or _SECTION_HEADING.match(line):
             if current is not None:
                 sections.append(current)
             current = [line]
@@ -415,6 +452,7 @@ def markdown_to_pdf(
         f"{header_html}{''.join(section_html_parts)}"
         "</body></html>"
     )
+    html = _classify_wide_html_tables(html)
     html = _make_html_hrefs_clickable(html, base_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -439,6 +477,113 @@ def markdown_to_pdf(
     return output_path
 
 
+def _classify_wide_html_tables(html: str) -> str:
+    """Apply compact PDF styling to tables that cannot fit normal cell padding."""
+
+    def classify(match: re.Match[str]) -> str:
+        table = match.group(0)
+        headers = _HTML_TABLE_HEADER.findall(table)
+        column_count = len(headers)
+        if column_count >= 13:
+            collapsed = _collapse_emdat_html_table(table, headers)
+            if collapsed is not None:
+                return collapsed
+            css_class = "very-wide-table"
+        elif column_count >= 8:
+            css_class = "wide-table"
+        else:
+            return table
+        return table.replace("<table>", f'<table class="{css_class}">', 1)
+
+    return _HTML_TABLE.sub(classify, html)
+
+
+def _collapse_emdat_html_table(table: str, headers: list[str]) -> str | None:
+    """Collapse the 14 EM-DAT fields into five readable PDF columns."""
+    names = [_HTML_TAG.sub("", header).strip().casefold() for header in headers]
+    index = {name: position for position, name in enumerate(names)}
+    required = {
+        "disno.",
+        "start year",
+        "start month",
+        "start day",
+        "end year",
+        "end month",
+        "end day",
+        "disaster type",
+        "disaster subtype",
+        "event name",
+        "location",
+        "regions",
+        "value",
+        "unit",
+    }
+    if not required.issubset(index):
+        return None
+
+    rendered_rows: list[str] = []
+    for row_html in _HTML_TABLE_ROW.findall(table):
+        cells = _HTML_TABLE_CELL.findall(row_html)
+        if len(cells) != len(headers):
+            continue
+        row = {name: cells[position].strip() for name, position in index.items()}
+        cell = row.__getitem__
+
+        def joined(*values: str) -> str:
+            return "<br />".join(value for value in values if value)
+
+        start_date = "-".join(
+            value
+            for value in (
+                cell("start year"),
+                cell("start month"),
+                cell("start day"),
+            )
+            if value
+        )
+        end_date = "-".join(
+            value
+            for value in (
+                cell("end year"),
+                cell("end month"),
+                cell("end day"),
+            )
+            if value
+        )
+        period = start_date if start_date == end_date else f"{start_date} to {end_date}"
+        event = cell("disno.")
+        hazard = joined(
+            cell("disaster type"),
+            cell("disaster subtype"),
+            cell("event name"),
+        )
+        area = joined(cell("location"), cell("regions"))
+        reported_value = " ".join(
+            value for value in (cell("value"), cell("unit")) if value
+        )
+        rendered_rows.append(
+            "<tr>"
+            f"<td>{event or '&mdash;'}</td>"
+            f"<td>{period or '&mdash;'}</td>"
+            f"<td>{hazard or '&mdash;'}</td>"
+            f"<td>{area or '&mdash;'}</td>"
+            f"<td>{reported_value or '&mdash;'}</td>"
+            "</tr>"
+        )
+
+    if not rendered_rows:
+        return None
+    return (
+        '<table class="emdat-table"><thead><tr>'
+        '<th width="15%">Event</th>'
+        '<th width="15%">Period</th>'
+        '<th width="20%">Hazard</th>'
+        '<th width="38%">Area</th>'
+        '<th width="12%">Reported value</th>'
+        "</tr></thead><tbody>" + "".join(rendered_rows) + "</tbody></table>"
+    )
+
+
 def build_research_pdf(
     *,
     input_dir: Path,
@@ -446,7 +591,7 @@ def build_research_pdf(
 ) -> Path:
     """Combine metric markdown under ``input_dir`` and write a PDF."""
     files = list_metric_report_files(input_dir)
-    combined = combine_metric_reports(files)
+    combined = combine_metric_reports(files, title=output_path.stem)
     return markdown_to_pdf(combined, output_path, base_dir=input_dir)
 
 
@@ -469,6 +614,8 @@ def metric_path(metric: Metric) -> MetricPath:
         return "worldbank"
     if metric.data_sources and all(s.source == "FAOSTAT" for s in metric.data_sources):
         return "faostat"
+    if metric.data_sources and all(s.source == "EMDAT" for s in metric.data_sources):
+        return "emdat"
     return "researcher"
 
 
@@ -494,15 +641,71 @@ def select_metrics(
     return selected
 
 
-def _format_citation(citation: StatementCitation) -> str:
-    if citation.page_number is not None:
-        label = f"{citation.document_name}, p. {citation.page_number}"
-    else:
-        label = citation.document_name
-    link = f"[{label}]({markdown_document_target(citation.document_uri)})"
-    if citation.origin:
-        return f"{link} ({citation.origin})"
-    return link
+def parse_countries_iso3(raw: str) -> list[str]:
+    """Parse a comma/whitespace-separated ISO3 list; drop empties and duplicates."""
+    tokens = [
+        token.strip().upper() for token in re.split(r"[\s,]+", raw) if token.strip()
+    ]
+    if not tokens:
+        raise ValueError("At least one ISO3 country code is required")
+    seen: set[str] = set()
+    countries: list[str] = []
+    for token in tokens:
+        if token in seen:
+            continue
+        seen.add(token)
+        countries.append(token)
+    return countries
+
+
+@dataclass(frozen=True, slots=True)
+class MetricProcessJob:
+    """One OS-process batch for parallel multi-country research."""
+
+    kind: MetricPath
+    metric_indices: list[int]
+    data_source: str | None = None
+
+
+def build_metric_process_jobs(metrics: list[Metric]) -> list[MetricProcessJob]:
+    """Partition metrics into process jobs: one batch per structured source, one per researcher."""
+    by_path: dict[MetricPath, list[int]] = {
+        "worldbank": [],
+        "faostat": [],
+        "emdat": [],
+        "researcher": [],
+    }
+    for index, metric in select_metrics(metrics, None):
+        by_path[metric_path(metric)].append(index)
+
+    jobs: list[MetricProcessJob] = []
+    if by_path["worldbank"]:
+        jobs.append(
+            MetricProcessJob(
+                kind="worldbank",
+                metric_indices=by_path["worldbank"],
+                data_source="WorldBank",
+            )
+        )
+    if by_path["faostat"]:
+        jobs.append(
+            MetricProcessJob(
+                kind="faostat",
+                metric_indices=by_path["faostat"],
+                data_source="FAOSTAT",
+            )
+        )
+    if by_path["emdat"]:
+        jobs.append(
+            MetricProcessJob(
+                kind="emdat",
+                metric_indices=by_path["emdat"],
+                data_source="EMDAT",
+            )
+        )
+    for index in by_path["researcher"]:
+        jobs.append(MetricProcessJob(kind="researcher", metric_indices=[index]))
+    return jobs
 
 
 def format_structured_result(
@@ -511,34 +714,45 @@ def format_structured_result(
     plot_dir: Path,
     plot_stem: str,
 ) -> tuple[str, list[str]]:
-    """Return plot-only result markdown for World Bank and FAOSTAT data."""
+    """Return parseable evidence blocks for structured data results."""
     if not results:
-        return ("No structured data returned for this metric.", [])
+        return ("# Direct evidence\n\nNone.\n\n# Indirect evidence\n\nNone.", [])
 
     sections: list[str] = []
     references: list[str] = []
     for result_index, result in enumerate(results, start=1):
         if isinstance(result, WorldBankDataResult):
-            section, reference = _format_worldbank_plot(
+            section, reference = _format_worldbank_evidence(
                 result,
                 plot_dir=plot_dir,
                 plot_stem=f"{plot_stem}-worldbank-{result_index}",
             )
         elif isinstance(result, FAOSTATDataResult):
-            section, reference = _format_faostat_plot(
+            section, reference = _format_faostat_evidence(
                 result,
                 plot_dir=plot_dir,
                 plot_stem=f"{plot_stem}-faostat-{result_index}",
             )
+        elif isinstance(result, EmDatDataResult):
+            section, reference = _format_emdat_evidence(
+                result,
+                plot_dir=plot_dir,
+                plot_stem=f"{plot_stem}-emdat-{result_index}",
+            )
         else:
             title = getattr(result, "title", None) or "Structured data result"
             url = getattr(result, "url", None) or ""
-            section = str(title)
-            reference = f"- [{title}]({url})" if url else ""
-        sections.append(section)
+            section = f"Source: {title}"
+            reference = f"[{title}]({url})" if url else str(title)
+        sections.append(f"## Direct Evidence {result_index}\n\n{section}")
         if reference:
             references.append(reference)
-    return ("\n\n".join(sections), references)
+    body = (
+        "# Direct evidence\n\n"
+        + "\n\n".join(sections)
+        + "\n\n# Indirect evidence\n\nNone."
+    )
+    return body, references
 
 
 def format_worldbank_result(
@@ -555,7 +769,7 @@ def format_worldbank_result(
     )
 
 
-def _format_worldbank_plot(
+def _format_worldbank_evidence(
     result: WorldBankDataResult,
     *,
     plot_dir: Path,
@@ -577,16 +791,30 @@ def _format_worldbank_plot(
         output_path=plot_dir / f"{plot_stem}.png",
         default_unit=unit,
     )
-    section = _plot_markdown(plot_path, title, plot_dir)
+    table_data = result.data.copy()
+    if "unit" not in table_data:
+        table_data["unit"] = unit
+    table = _dataframe_markdown_table(
+        table_data,
+        columns=("year", "value", "unit"),
+    )
+    section_parts = [
+        f"Source: {title}",
+        f"Indicator: {indicator}",
+        f"Source data:\n\n{table}",
+    ]
+    if plot_path is not None:
+        section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
+    section = "\n\n".join(section_parts)
     reference = (
-        f"- [{title}]({url}) (indicator `{indicator}`)"
+        f"[{title}]({url}) (World Bank indicator `{indicator}`)"
         if url
-        else f"- World Bank indicator `{indicator}`"
+        else f"World Bank indicator `{indicator}`"
     )
     return section, reference
 
 
-def _format_faostat_plot(
+def _format_faostat_evidence(
     result: FAOSTATDataResult,
     *,
     plot_dir: Path,
@@ -605,14 +833,138 @@ def _format_faostat_plot(
         series_columns=("item", "element", "unit"),
         default_unit=str(result.metadata.get("unit") or ""),
     )
-    section = _plot_markdown(plot_path, title, plot_dir)
+    table = _dataframe_markdown_table(
+        result.data,
+        columns=(
+            "year",
+            "period",
+            "item",
+            "indicator",
+            "element",
+            "qualifier",
+            "observation_source",
+            "unit",
+            "value_raw",
+            "value",
+            "flag",
+            "note",
+        ),
+    )
+    section_parts = [
+        f"Source: {title}",
+        f"Indicator: {indicator}",
+        f"Source data:\n\n{table}",
+    ]
+    if plot_path is not None:
+        section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
+    section = "\n\n".join(section_parts)
     url = result.url or ""
     reference = (
-        f"- [{title}]({url}) (FAOSTAT `{indicator}`)"
-        if url
-        else f"- FAOSTAT `{indicator}`"
+        f"[{title}]({url}) (FAOSTAT `{indicator}`)" if url else f"FAOSTAT `{indicator}`"
     )
     return section, reference
+
+
+def _format_emdat_evidence(
+    result: EmDatDataResult,
+    *,
+    plot_dir: Path,
+    plot_stem: str,
+) -> tuple[str, str]:
+    indicator = str(result.metadata.get("indicator") or "")
+    title = result.title or indicator or "EM-DAT indicator"
+    unit = str(result.metadata.get("unit") or "")
+    if result.data.empty:
+        table = "None."
+        plot_path = None
+    else:
+        national = national_totals_by_year(result.data)
+        plot_path = plot_time_series(
+            national,
+            title=title,
+            output_path=plot_dir / f"{plot_stem}.png",
+            default_unit=unit,
+        )
+        table_data = result.data.copy()
+        if "unit" not in table_data:
+            table_data["unit"] = unit
+        table = _dataframe_markdown_table(
+            table_data,
+            columns=(
+                "dis_no",
+                "start_year",
+                "start_month",
+                "start_day",
+                "end_year",
+                "end_month",
+                "end_day",
+                "disaster_type",
+                "disaster_subtype",
+                "event_name",
+                "location",
+                "regions",
+                "value",
+                "unit",
+            ),
+        )
+
+    section_parts = [
+        f"Source: {title}",
+        f"Indicator: {indicator}",
+        f"Source data:\n\n{table}",
+    ]
+    if plot_path is not None:
+        section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
+    section = "\n\n".join(section_parts)
+
+    url = result.url or ""
+    reference = (
+        f"[{title}]({url}) (EM-DAT `{indicator}`)" if url else f"EM-DAT `{indicator}`"
+    )
+    return section, reference
+
+
+def _dataframe_markdown_table(
+    data: pd.DataFrame,
+    *,
+    columns: tuple[str, ...],
+) -> str:
+    selected = [column for column in columns if column in data.columns]
+    if not selected:
+        return "None."
+    headers = [_column_heading(column) for column in selected]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for values in data[selected].itertuples(index=False, name=None):
+        cells = [_escape_table_cell(_table_value(value)) for value in values]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _column_heading(column: str) -> str:
+    special = {"dis_no": "DisNo.", "value_raw": "Value raw"}
+    return special.get(column, column.replace("_", " ").title())
+
+
+def _table_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        return "; ".join(str(item) for item in value)
+    if value is None:
+        return ""
+    try:
+        if bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).replace("\n", " ")
+
+
+def _escape_table_cell(text: str) -> str:
+    return text.replace("|", "\\|")
 
 
 def _plot_markdown(plot_path: Path | None, title: str, plot_dir: Path) -> str:
@@ -628,50 +980,192 @@ def _plot_markdown(plot_path: Path | None, title: str, plot_dir: Path) -> str:
 def format_researcher_result(
     output: ResearcherOutput,
 ) -> tuple[str, list[str]]:
-    """Return (result markdown, reference markdown lines) for ResearcherAgent.
+    """Return parseable direct/indirect evidence and a numbered-citation answer.
 
-    Always includes a Status line and best-effort findings. Status values:
-    answered; high level answer, lacking detailed evidence; cannot answer
-    with available evidence.
+    Direct evidence is any quantitative claim that answers the metric subject
+    (requested unit or a related quantitative form). Indirect evidence is
+    supporting/context evidence that does not itself measure that subject.
     """
-    body = build_status_summary(
-        status=output.status,
-        country_name=output.country,
-        statements=output.statements,
-        gaps=output.open_gaps,
-    )
-    if not body.strip():
-        body = output.final_summary.strip() or "(empty researcher summary)"
-    status_label = STATUS_DISPLAY[output.status]
-    result_body = f"**Status:** {status_label}\n\n{body}"
+    source_by_id = {source.source_id: source for source in output.sources}
+    direct_ids: list[str] = []
+    indirect_ids: list[str] = []
+    for claim in output.claims:
+        target = direct_ids if is_direct_evidence_claim(claim) else indirect_ids
+        if claim.source_id not in target:
+            target.append(claim.source_id)
+    indirect_ids = [
+        source_id for source_id in indirect_ids if source_id not in direct_ids
+    ]
+    ordered_ids = [*direct_ids, *indirect_ids]
+    sources: list[SourceReference] = []
+    for source_id in ordered_ids:
+        source = source_by_id.get(source_id)
+        if source is None:
+            raise ValueError(f"Research evidence source is missing: {source_id}")
+        _validate_report_source(source)
+        sources.append(source)
 
-    refs: list[str] = []
-    seen: set[tuple[str, int | None]] = set()
+    reference_numbers = {
+        source.source_id: number for number, source in enumerate(sources, start=1)
+    }
+    direct_sources = [source_by_id[source_id] for source_id in direct_ids]
+    indirect_sources = [source_by_id[source_id] for source_id in indirect_ids]
+    direct = _format_evidence_section("Direct", direct_sources)
+    indirect = _format_evidence_section("Indirect", indirect_sources)
+    answer = _format_numbered_answer(
+        output,
+        reference_numbers=reference_numbers,
+    )
+    references = [_format_source_reference(source) for source in sources]
+    return f"{direct}\n\n{indirect}\n\n# Answer\n\n{answer}", references
+
+
+def _validate_report_source(source: SourceReference) -> None:
+    if source.source_type == "web":
+        if source.source_text is None:
+            raise ValueError(f"Web evidence has no source text: {source.source_id}")
+        return
+    if source.evidence_id is None or not source.physical_pages:
+        raise ValueError(
+            "Research reports require PDF evidence provenance; rerun with "
+            f"`pdf-research` (source {source.source_id})."
+        )
+
+
+def _format_evidence_section(
+    kind: Literal["Direct", "Indirect"],
+    sources: list[SourceReference],
+) -> str:
+    heading = f"# {kind} evidence"
+    if not sources:
+        return f"{heading}\n\nNone."
+    blocks = [
+        _format_evidence_block(kind, index, source)
+        for index, source in enumerate(sources, start=1)
+    ]
+    return f"{heading}\n\n" + "\n\n".join(blocks)
+
+
+def _clean_source_text(text: str) -> str:
+    """Strip each line and collapse consecutive blank lines to one."""
+    cleaned: list[str] = []
+    previous_blank = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if cleaned and not previous_blank:
+                cleaned.append("")
+                previous_blank = True
+            continue
+        cleaned.append(stripped)
+        previous_blank = False
+    return "\n".join(cleaned)
+
+
+def _format_source_text(text: str) -> str:
+    """Wrap source text in a fenced code block so Markdown is not rendered."""
+    cleaned = _clean_source_text(text)
+    return f"Source text:\n\n```\n{cleaned}\n```"
+
+
+def _format_evidence_block(
+    kind: Literal["Direct", "Indirect"],
+    index: int,
+    source: SourceReference,
+) -> str:
+    # Blank lines between fields so Markdown renders each on its own line.
+    # Source text is always last before verified visual facts.
+    lines = [f"## {kind} Evidence {index}"]
+    if source.source_type == "web":
+        lines.extend(
+            [
+                f"Source: {source.document_uri}",
+                _format_source_text(source.source_text or ""),
+            ]
+        )
+        return "\n\n".join(lines)
+
+    events = "; ".join(
+        f"{event.event_id}, {event.relationship}" for event in source.events
+    )
+    lines.extend(
+        [
+            f"Evidence id: {source.evidence_id}",
+            f"Source: {source.document_name}",
+            "Source physical pages: "
+            + ", ".join(str(page) for page in source.physical_pages),
+            "Source printed pages: " + (", ".join(source.printed_pages) or "None."),
+            f"Events: {events or 'None.'}",
+        ]
+    )
+    lines.append(_format_source_text(source.source_text or "None."))
+    if source.verified_visual_facts:
+        facts = "\n".join(f"- {fact.text}" for fact in source.verified_visual_facts)
+        lines.append(f"Verified visual facts:\n{facts}")
+    return "\n\n".join(lines)
+
+
+def _format_numbered_answer(
+    output: ResearcherOutput,
+    *,
+    reference_numbers: dict[str, int],
+) -> str:
+    claim_by_id: dict[str, EvidenceClaim] = {
+        claim.claim_id: claim for claim in output.claims
+    }
+    paragraphs: list[str] = []
     for statement in output.statements:
-        for citation in statement.citations:
-            key = (citation.document_uri, citation.page_number)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append(f"- {_format_citation(citation)}")
-    # Fall back to sources if statements lack citations.
-    if not refs:
-        for source in output.sources:
-            key = (source.document_uri, source.page_number)
-            if key in seen:
-                continue
-            seen.add(key)
-            if source.page_number is not None:
-                label = f"{source.document_name}, p. {source.page_number}"
-            else:
-                label = source.document_name
-            origin = format_source_origin(
-                source_type=source.source_type,
-                document_source=source.document_source,
+        direct_claims = [
+            claim_by_id[claim_id]
+            for claim_id in statement.supporting_claim_ids
+            if claim_id in claim_by_id
+            and is_direct_evidence_claim(claim_by_id[claim_id])
+        ]
+        if not direct_claims:
+            continue
+        numbers = list(
+            dict.fromkeys(
+                reference_numbers[claim.source_id]
+                for claim in direct_claims
+                if claim.source_id in reference_numbers
             )
-            target = markdown_document_target(source.document_uri)
-            refs.append(f"- [{label}]({target}) ({origin})")
-    return result_body, refs
+        )
+        citations = " ".join(f"[{number}]" for number in numbers)
+        text = statement.text.strip()
+        paragraphs.append(f"{text} {citations}".rstrip())
+    if paragraphs:
+        return "\n\n".join(paragraphs)
+    return (
+        "The available evidence cannot answer this metric quantitatively for "
+        f"{output.country}."
+    )
+
+
+def _format_source_reference(source: SourceReference) -> str:
+    label = source.document_name
+    if source.physical_pages:
+        page_label = ", ".join(str(page) for page in source.physical_pages)
+        label = f"{label}, physical pages {page_label}"
+    target = markdown_document_target(source.document_uri)
+    origin = format_source_origin(
+        source_type=source.source_type,
+        document_source=source.document_source,
+    )
+    return f"[{label}]({target}) ({origin})"
+
+
+def format_queries_section(query_runs: list[QueryRunStat]) -> str:
+    """Render the trailing # Queries section for a researcher report."""
+    lines = ["# Queries", ""]
+    if not query_runs:
+        lines.append("None.")
+        return "\n".join(lines)
+    for index, run in enumerate(query_runs, start=1):
+        lines.append(
+            f"{index}. [{run.destination}] {run.query} — "
+            f"returned: {run.results_returned}, accepted: {run.results_accepted}"
+        )
+    return "\n".join(lines)
 
 
 def format_metric_section(
@@ -680,30 +1174,41 @@ def format_metric_section(
     metric: Metric,
     result_markdown: str,
     reference_lines: list[str],
+    queries_markdown: str | None = None,
 ) -> str:
     """Build one markdown section for a metric."""
     unit = metric.unit or "(none)"
-    refs = "\n".join(reference_lines) if reference_lines else "- (none)"
-    return "\n".join(
-        [
-            f"## {section_number}. {metric.name}",
-            "",
-            f"**Description:** {metric.description}",
-            "",
-            f"**Example:** {metric.example}",
-            "",
-            f"**Unit:** {unit}",
-            "",
-            "### Result",
-            "",
-            result_markdown,
-            "",
-            "### References",
-            "",
-            refs,
-            "",
-        ]
+    refs = (
+        "\n".join(
+            f"{number}. {line.removeprefix('- ').strip()}"
+            for number, line in enumerate(reference_lines, start=1)
+        )
+        if reference_lines
+        else "None."
     )
+    parts = [
+        "# Metric info",
+        "",
+        f"Seq Number: {section_number}",
+        "",
+        f"Name: {metric.name}",
+        "",
+        f"Description: {metric.description}",
+        "",
+        f"Example: {metric.example}",
+        "",
+        f"Unit: {unit}",
+        "",
+        result_markdown,
+        "",
+        "# References",
+        "",
+        refs,
+        "",
+    ]
+    if queries_markdown:
+        parts.extend([queries_markdown.rstrip(), ""])
+    return "\n".join(parts)
 
 
 def build_report(
@@ -712,5 +1217,5 @@ def build_report(
     country_iso3: str,
     sections: list[str],
 ) -> str:
-    header = f"# {title} - {country_iso3.upper()}\n\n"
-    return header + "\n".join(sections).rstrip() + "\n"
+    del title, country_iso3
+    return "\n".join(sections).rstrip() + "\n"

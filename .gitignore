@@ -19,6 +19,7 @@ fetched_data/
 
 fao_data/
 faostat_data/
+datasets/
 
 **/.DS_Store
 

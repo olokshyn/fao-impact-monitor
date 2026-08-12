@@ -12,6 +12,10 @@ from fao_impact_monitor.config import GeminiConfig
 from fao_impact_monitor.pdf_pipeline.gemini import (
     _DOCUMENT_STRUCTURE_SCHEMA,
     _SECTION_EVIDENCE_SCHEMA,
+    DOCUMENT_STRUCTURE_PROMPT,
+    SECTION_EVIDENCE_PROMPT,
+    VISUAL_DESCRIBE_PROMPT,
+    VISUAL_VERIFY_PROMPT,
     GeminiPdfClient,
 )
 
@@ -101,6 +105,32 @@ def test_structured_schemas_preserve_required_hierarchy_and_evidence_fields() ->
         "corrected_page_end",
         "boundary_rationale",
     } <= _SECTION_EVIDENCE_SCHEMA["properties"].keys()
+
+
+def test_section_evidence_prompt_requires_multicolumn_page_break_merge() -> None:
+    assert "MULTI-COLUMN CONTINUATIONS" in SECTION_EVIDENCE_PROMPT
+    assert "Same-page wraps" in SECTION_EVIDENCE_PROMPT
+    assert "rightmost column" in SECTION_EVIDENCE_PROMPT
+    assert "leftmost column on the next page" in SECTION_EVIDENCE_PROMPT
+    assert "Never emit an orphan" in SECTION_EVIDENCE_PROMPT
+    assert "PARENT REGIONAL SECTION HEADINGS" in SECTION_EVIDENCE_PROMPT
+    assert "LATIN AMERICA AND THE CARIBBEAN" in SECTION_EVIDENCE_PROMPT
+    assert "TABLES:" in SECTION_EVIDENCE_PROMPT
+    assert "every column header" in SECTION_EVIDENCE_PROMPT
+    assert "Do not stop after the first value column" in SECTION_EVIDENCE_PROMPT
+    assert "CHARTS / INFOGRAPHICS:" in SECTION_EVIDENCE_PROMPT
+    assert "one atomic fact per labelled bar" in SECTION_EVIDENCE_PROMPT
+    assert "MULTI-COLUMN PAGE FLOW" in DOCUMENT_STRUCTURE_PROMPT
+    assert "parent_ordinal" in DOCUMENT_STRUCTURE_PROMPT
+
+
+def test_visual_prompts_require_citable_chart_facts_not_ocr_line_dumps() -> None:
+    assert "CITABLE" in VISUAL_DESCRIBE_PROMPT
+    assert "NEVER emit facts of the form" in VISUAL_DESCRIBE_PROMPT
+    assert "one atomic fact per labelled category" in VISUAL_DESCRIBE_PROMPT
+    assert "125.0 million tonnes" in VISUAL_DESCRIBE_PROMPT
+    assert "OCR line-dump" in VISUAL_VERIFY_PROMPT
+    assert "mid-word truncations" in VISUAL_VERIFY_PROMPT
 
 
 def test_section_request_maps_excerpt_pages_to_original_pages(tmp_path: Path) -> None:

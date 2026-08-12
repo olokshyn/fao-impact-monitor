@@ -50,6 +50,41 @@ def test_artifacts_render_source_pages_and_preserve_exact_text(tmp_path: Path) -
     assert artifacts.crop(1, BoundingBox(x0=900, y0=900, x1=1000, y1=1000)) is None
 
 
+def test_exact_source_text_stitches_column_wrap_across_pages(tmp_path: Path) -> None:
+    source = tmp_path / "columns.pdf"
+    document = pymupdf.open()  # type: ignore[no-untyped-call]
+    page_one = document.new_page()
+    page_one.insert_text(
+        (72, 72),
+        "Mozambique Insecurity in northern areas. The number of people facing "
+        "acute food insecurity between",
+    )
+    page_two = document.new_page()
+    page_two.insert_text(
+        (72, 72),
+        "April and September 2026 is projected at 529 000. Namibia Cereal production.",
+    )
+    document.save(source)  # type: ignore[no-untyped-call]
+    document.close()  # type: ignore[no-untyped-call]
+    artifacts = PdfArtifacts(tmp_path / "artifacts", sha256_file(source), 72)
+    _, pages = artifacts.prepare(source)
+
+    proposed = (
+        "Mozambique Insecurity in northern areas. The number of people facing "
+        "acute food insecurity between April and September 2026 is projected at "
+        "529 000."
+    )
+    page_texts = PdfEvidenceIngestor()._exact_source_texts_by_page(proposed, pages)
+
+    assert page_texts[1].endswith("between")
+    assert page_texts[2].startswith("April and September 2026")
+    assert "Namibia" not in page_texts[2]
+    assert (
+        PdfEvidenceIngestor()._exact_source_text(proposed, pages)
+        == f"{page_texts[1]}\n{page_texts[2]}"
+    )
+
+
 def test_section_pdf_contains_only_requested_source_pages(tmp_path: Path) -> None:
     source = tmp_path / "source.pdf"
     document = pymupdf.open()  # type: ignore[no-untyped-call]

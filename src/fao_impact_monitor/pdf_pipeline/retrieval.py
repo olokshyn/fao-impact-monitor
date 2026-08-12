@@ -273,6 +273,13 @@ class PdfEvidenceVectorStore:
                 "pipeline": "pdf_pipeline",
                 "evidence_id": unit.evidence_id,
                 "section_id": unit.section_id,
+                "source_text": unit.source_text,
+                "physical_pages": list(unit.physical_pages),
+                "printed_pages": list(unit.printed_pages),
+                "events": [event.model_dump(mode="json") for event in unit.events],
+                "verified_visual_facts": [
+                    fact.model_dump(mode="json") for fact in unit.verified_visual_facts
+                ],
                 "source_regions": [
                     region.model_dump(mode="json") for region in unit.source_regions
                 ],

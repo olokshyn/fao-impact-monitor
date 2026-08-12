@@ -52,6 +52,15 @@ uv run pipeline research \
   --source FAOSTAT
 ```
 
+Run only the EM-DAT metrics:
+
+```bash
+uv run pipeline research \
+  --country KEN \
+  --use-case use-cases/el-nino.json \
+  --source emdat
+```
+
 ### Local MongoDB (debug)
 
 For interactive debugging of Atlas Search / Vector Search (`$search`, `$vectorSearch`, `$rankFusion`), start a persistent local Atlas-compatible MongoDB:

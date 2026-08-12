@@ -322,10 +322,17 @@ def test_get_data_rejects_invalid_year_range(tmp_path: Path) -> None:
 
 def test_el_nino_uses_best_available_faostat_series_for_all_final_metrics() -> None:
     expected_codes = {
-        "Irrigated cropland": [(FAOSTAT_INPUTS_LAND_USE, "6690", "7252")],
+        "Irrigated cropland": [
+            (FAOSTAT_RURAL_LIVELIHOODS, "24280", "6121"),
+            (FAOSTAT_INPUTS_LAND_USE, "6694", "5110"),
+            (FAOSTAT_INPUTS_LAND_USE, "6690", "7252"),
+            (FAOSTAT_INPUTS_LAND_USE, "6616", "5110"),
+            (FAOSTAT_INPUTS_LAND_USE, "6611", "5110"),
+        ],
         "Cropfarm households with irrigation system": [
             (FAOSTAT_RURAL_LIVELIHOODS, "24273", "6121"),
-            (FAOSTAT_INPUTS_LAND_USE, "6690", "7252"),
+            (FAOSTAT_INPUTS_LAND_USE, "6611", "5110"),
+            (FAOSTAT_INPUTS_LAND_USE, "6616", "5110"),
         ],
         "Credit obtained by households": [
             (FAOSTAT_RURAL_LIVELIHOODS, "24272", "6244"),
@@ -450,9 +457,14 @@ def test_downloaded_el_nino_final_metrics_return_faostat_data_for_kenya() -> Non
         for index, metric in enumerate(metrics)
         if metric.name == "Irrigated cropland"
     )
+    emdat_index = next(
+        index
+        for index, metric in enumerate(metrics)
+        if metric.name == "Deaths and missing persons"
+    )
     source = FAOSTAT()
 
-    for metric in metrics[irrigated_index:]:
+    for metric in metrics[irrigated_index:emdat_index]:
         assert metric.data_sources
         assert all(config.source == "FAOSTAT" for config in metric.data_sources)
         results: list[FAOSTATDataResult] = []

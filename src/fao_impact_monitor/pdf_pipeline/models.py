@@ -139,8 +139,8 @@ class ModelVersions(BaseModel):
 class PromptVersions(BaseModel):
     document_structure: str = "v2"
     boundary_validation: str = "v2"
-    evidence_extraction: str = "v4"
-    visual_verification: str = "v2"
+    evidence_extraction: str = "v5"
+    visual_verification: str = "v3"
     section_summary: str = "v1"
 
 

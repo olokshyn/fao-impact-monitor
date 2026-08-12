@@ -4,6 +4,7 @@ from .data_source import DataResult, DataSource, get_data_source
 from .data_source_config import DataSourceConfig
 
 if TYPE_CHECKING:
+    from .emdat import EMDAT, EmDatDataResult, EmDatDataSourceConfig
     from .fao_repository import (
         FaoRepository,
         FaoRepositoryDataResult,
@@ -14,10 +15,13 @@ if TYPE_CHECKING:
     from .world_bank import WorldBank, WorldBankDataResult, WorldBankDataSourceConfig
 
 __all__ = [
+    "EMDAT",
     "FAOSTAT",
     "DataResult",
     "DataSource",
     "DataSourceConfig",
+    "EmDatDataResult",
+    "EmDatDataSourceConfig",
     "FAOSTATDataResult",
     "FAOSTATDataSourceConfig",
     "FaoRepository",
@@ -31,6 +35,9 @@ __all__ = [
 ]
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
+    "EMDAT": (".emdat", "EMDAT"),
+    "EmDatDataResult": (".emdat", "EmDatDataResult"),
+    "EmDatDataSourceConfig": (".emdat", "EmDatDataSourceConfig"),
     "FaoRepository": (".fao_repository", "FaoRepository"),
     "FaoRepositoryDataResult": (".fao_repository", "FaoRepositoryDataResult"),
     "FaoRepositoryDataSourceConfig": (

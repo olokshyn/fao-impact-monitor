@@ -518,6 +518,92 @@
                     "exclusive": true
                 }
             ]
+        },
+        {
+            "name": "Deaths and missing persons",
+            "description": "How many people died or were reported missing due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts).",
+            "example": "59 people died in Kenya floods in 2026 (EM-DAT).",
+            "unit": "persons",
+            "data_sources": [
+                {
+                    "source": "EMDAT",
+                    "indicator": "Total Deaths",
+                    "unit": "persons",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "People affected, injured and requiring assistance",
+            "description": "How many people were affected, injured or required assistance due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts).",
+            "example": "695,255 people were affected by floods in Kenya in 2023 (EM-DAT).",
+            "unit": "persons",
+            "data_sources": [
+                {
+                    "source": "EMDAT",
+                    "indicator": "No. Injured",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "EMDAT",
+                    "indicator": "No. Affected",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "EMDAT",
+                    "indicator": "Total Affected",
+                    "unit": "persons",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Displaced, evacuated and relocated people",
+            "description": "How many people were displaced, evacuated or relocated due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). EM-DAT reports people whose homes were destroyed or heavily damaged and who need shelter (No. Homeless).",
+            "example": "1,000 people were left homeless by floods in Kenya in 2016 (EM-DAT).",
+            "unit": "persons",
+            "data_sources": [
+                {
+                    "source": "EMDAT",
+                    "indicator": "No. Homeless",
+                    "unit": "persons",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Housing damaged and destroyed",
+            "description": "How many houses were damaged or destroyed, and associated reconstruction, insured, and total damage costs, due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). EM-DAT reports people needing shelter (No. Homeless) and CPI-adjusted damage costs.",
+            "example": "Floods in Kenya left 1,000 people homeless and caused substantial adjusted total damage (EM-DAT).",
+            "unit": "persons / 1000 USD",
+            "data_sources": [
+                {
+                    "source": "EMDAT",
+                    "indicator": "No. Homeless",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "EMDAT",
+                    "indicator": "Reconstruction Costs, Adjusted ('000 US$)",
+                    "unit": "1000 USD",
+                    "exclusive": true
+                },
+                {
+                    "source": "EMDAT",
+                    "indicator": "Insured Damage, Adjusted ('000 US$)",
+                    "unit": "1000 USD",
+                    "exclusive": true
+                },
+                {
+                    "source": "EMDAT",
+                    "indicator": "Total Damage, Adjusted ('000 US$)",
+                    "unit": "1000 USD",
+                    "exclusive": true
+                }
+            ]
         }
     ]
 }

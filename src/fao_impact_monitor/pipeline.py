@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated, Any
 
 import typer
@@ -22,16 +26,20 @@ from fao_impact_monitor.pdf_pipeline.retrieval import (
     ensure_pdf_pipeline_indexes,
 )
 from fao_impact_monitor.research_report import (
+    MetricProcessJob,
+    build_metric_process_jobs,
     build_report,
     build_research_pdf,
     default_research_dir,
     default_research_pdf_path,
     ensure_research_output_dir,
     format_metric_section,
+    format_queries_section,
     format_researcher_result,
     format_structured_result,
     metric_path,
     metric_report_path,
+    parse_countries_iso3,
     select_metrics,
     write_metric_report,
 )
@@ -124,7 +132,7 @@ async def _run_one_metric(
             path,
             report_path,
         )
-        if path in {"worldbank", "faostat"}:
+        if path in {"worldbank", "faostat", "emdat"}:
             source_names = ", ".join(
                 dict.fromkeys(config.source for config in metric.data_sources)
             )
@@ -139,6 +147,7 @@ async def _run_one_metric(
                 plot_dir=output_dir / "plots",
                 plot_stem=f"{index:04d}",
             )
+            queries_markdown = None
         else:
             typer.echo(f"[{position}/{total}] ResearcherAgent: {metric.name}")
             assert vector_store is not None
@@ -149,6 +158,7 @@ async def _run_one_metric(
                 web_research_enabled=web_research_enabled,
             )
             result_md, refs = format_researcher_result(output)
+            queries_markdown = format_queries_section(output.query_runs)
             logger.info(
                 "CLI research metric done index=%s name=%r status=%s statements=%s",
                 index,
@@ -162,6 +172,7 @@ async def _run_one_metric(
             metric=metric,
             result_markdown=result_md,
             reference_lines=refs,
+            queries_markdown=queries_markdown,
         )
         report = build_report(
             title=f"{title} research",
@@ -188,7 +199,7 @@ async def _run_research(
     metric_indices: list[int] | None,
     output_dir: Path,
     max_parallel: int,
-    use_pdf_vector_store: bool = False,
+    use_pdf_vector_store: bool = True,
     web_research_enabled: bool = True,
     data_source: str | None = None,
 ) -> Path:
@@ -275,6 +286,129 @@ async def _run_research(
     logger.info("Wrote %s research report(s) under %s", len(selected), output_dir)
     typer.echo(f"Wrote {len(selected)} report(s) under: {output_dir}")
     return output_dir
+
+
+def _research_process_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run one metric batch in a spawned worker process."""
+    _configure_logging()
+    country_iso3 = str(payload["country_iso3"])
+    kind = str(payload["kind"])
+    metric_indices = list(payload["metric_indices"])
+    started_at = perf_counter()
+    try:
+        asyncio.run(
+            _run_research(
+                use_case_path=Path(payload["use_case_path"]),
+                country_iso3=country_iso3,
+                metric_indices=metric_indices,
+                output_dir=Path(payload["output_dir"]),
+                max_parallel=max(1, len(metric_indices)),
+                use_pdf_vector_store=kind == "researcher",
+                data_source=payload.get("data_source"),
+            )
+        )
+    except Exception as exc:
+        logger.exception(
+            "Research worker failed country=%s kind=%s metrics=%s",
+            country_iso3,
+            kind,
+            metric_indices,
+        )
+        return {
+            "country_iso3": country_iso3,
+            "kind": kind,
+            "metric_indices": metric_indices,
+            "ok": False,
+            "error": str(exc),
+            "pid": os.getpid(),
+            "elapsed_seconds": perf_counter() - started_at,
+        }
+    return {
+        "country_iso3": country_iso3,
+        "kind": kind,
+        "metric_indices": metric_indices,
+        "ok": True,
+        "error": None,
+        "pid": os.getpid(),
+        "elapsed_seconds": perf_counter() - started_at,
+    }
+
+
+def _run_research_parallel(
+    *,
+    use_case_path: Path,
+    countries_iso3: list[str],
+    output_root: Path,
+    jobs: list[MetricProcessJob] | None = None,
+) -> list[dict[str, Any]]:
+    """Spawn one process per (country, metric-process-job) pair."""
+    metrics = Metric.from_use_case(use_case_path)
+    process_jobs = jobs if jobs is not None else build_metric_process_jobs(metrics)
+    if not process_jobs:
+        raise typer.BadParameter(f"No metrics found in use-case {use_case_path}")
+    if not countries_iso3:
+        raise typer.BadParameter("At least one ISO3 country code is required")
+
+    payloads: list[dict[str, Any]] = []
+    for country_iso3 in countries_iso3:
+        output_dir = output_root / use_case_path.stem / country_iso3.upper()
+        for job in process_jobs:
+            payloads.append(
+                {
+                    "use_case_path": str(use_case_path),
+                    "country_iso3": country_iso3.upper(),
+                    "kind": job.kind,
+                    "metric_indices": list(job.metric_indices),
+                    "data_source": job.data_source,
+                    "output_dir": str(output_dir),
+                }
+            )
+
+    typer.echo(
+        f"Launching {len(payloads)} process(es) "
+        f"({len(countries_iso3)} country(ies) × {len(process_jobs)} job(s)) "
+        f"for use-case {use_case_path}"
+    )
+    logger.info(
+        "Research-parallel plan: countries=%s jobs=%s total_processes=%s",
+        countries_iso3,
+        [(job.kind, job.metric_indices, job.data_source) for job in process_jobs],
+        len(payloads),
+    )
+
+    results: list[dict[str, Any]] = []
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=len(payloads),
+        mp_context=context,
+    ) as executor:
+        futures = {
+            executor.submit(_research_process_worker, payload): payload
+            for payload in payloads
+        }
+        for future in as_completed(futures):
+            payload = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:  # noqa: BLE001 - a worker process may crash
+                result = {
+                    "country_iso3": payload["country_iso3"],
+                    "kind": payload["kind"],
+                    "metric_indices": payload["metric_indices"],
+                    "ok": False,
+                    "error": str(exc),
+                    "pid": None,
+                    "elapsed_seconds": None,
+                }
+            results.append(result)
+            status = "ok" if result["ok"] else f"FAILED: {result['error']}"
+            typer.echo(
+                f"[{len(results)}/{len(payloads)}] "
+                f"{result['country_iso3']} {result['kind']} "
+                f"metrics={result['metric_indices']} pid={result['pid']} "
+                f"{status}"
+            )
+    return results
 
 
 async def _run_pdf_research_all_use_cases(
@@ -461,9 +595,64 @@ def research_command(
             metric_indices=metric,
             output_dir=output_dir,
             max_parallel=max_parallel,
+            use_pdf_vector_store=True,
             data_source=source,
         )
     )
+
+
+@app.command("research-parallel")
+def research_parallel_command(
+    countries: Annotated[
+        str,
+        typer.Option(
+            "--countries",
+            help="Comma-separated ISO3 country codes (e.g. ETH,KEN,MWI).",
+        ),
+    ],
+    use_case: Annotated[
+        Path,
+        typer.Option(
+            "--use-case",
+            help="Path to use-case JSON with metrics and default data_sources.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            path_type=Path,
+        ),
+    ] = _DEFAULT_USE_CASE,
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help=(
+                "Root directory for per-country reports "
+                "(default: reports/; results under "
+                "<root>/<USE_CASE>/<COUNTRY>/)."
+            ),
+            path_type=Path,
+        ),
+    ] = Path("reports"),
+) -> None:
+    """Run all metrics across countries in separate OS processes."""
+    _configure_logging()
+    try:
+        countries_iso3 = parse_countries_iso3(countries)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    results = _run_research_parallel(
+        use_case_path=use_case,
+        countries_iso3=countries_iso3,
+        output_root=output_root,
+    )
+    failed = [result for result in results if not result["ok"]]
+    typer.echo(
+        f"Completed {len(results) - len(failed)}/{len(results)} process(es) "
+        f"under: {output_root / use_case.stem}"
+    )
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("pdf-research")
@@ -620,9 +809,7 @@ def report_pdf_command(
     _configure_logging()
     country_iso3 = country.upper()
     source_dir = input_dir or default_research_dir(country_iso3, use_case=use_case)
-    output_path = output or default_research_pdf_path(
-        country_iso3, use_case=use_case
-    )
+    output_path = output or default_research_pdf_path(country_iso3, use_case=use_case)
     try:
         written = build_research_pdf(input_dir=source_dir, output_path=output_path)
     except FileNotFoundError as exc:

@@ -205,7 +205,7 @@ def test_filter_research_queries_rejects_duplicates_and_missing_country() -> Non
     kept = filter_research_queries(
         [
             ResearchQuery(
-                query="Kenya maize yields drought",
+                query="Kenya maize yield statistics drought",
                 purpose="value",
                 target_gap_ids=["gap_1"],
                 destination="vectorstore",
@@ -228,6 +228,18 @@ def test_filter_research_queries_rejects_duplicates_and_missing_country() -> Non
                 target_gap_ids=["gap_1"],
                 destination="web",
             ),
+            ResearchQuery(
+                query="%",
+                purpose="unit only",
+                target_gap_ids=["gap_1"],
+                destination="vectorstore",
+            ),
+            ResearchQuery(
+                query="Kenya El Nino background",
+                purpose="generic context",
+                target_gap_ids=["gap_1"],
+                destination="vectorstore",
+            ),
         ],
         country_name="Kenya",
         country_iso3="KEN",
@@ -235,7 +247,7 @@ def test_filter_research_queries_rejects_duplicates_and_missing_country() -> Non
         open_gap_ids={"gap_1"},
         require_gaps=True,
     )
-    assert [q.query for q in kept] == ["Kenya maize yields drought"]
+    assert [q.query for q in kept] == ["Kenya maize yield statistics drought"]
 
 
 def test_generate_research_queries_initial_and_follow_up() -> None:
@@ -247,7 +259,8 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
             self.calls += 1
             content = messages[1].content
             assert "Kenya" in content
-            assert "percent" in content.lower() or "unit" in content.lower()
+            assert "Expected unit / answer form" not in content
+            assert "Ignore the metric Unit field" in content
             if "Example answer" in content:
                 assert "answer-shape guidance" in content
             if "Open evidence gaps" in content:
@@ -266,20 +279,20 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
             return ResearchQueryList(
                 queries=[
                     ResearchQuery(
-                        query="Kenya maize production drought impacts",
+                        query="Kenya maize production drought loss statistics",
                         purpose="direct",
                         target_gap_ids=[],
                         destination="vectorstore",
                     ),
                     ResearchQuery(
-                        query="Kenya cereal yield methodology definition",
-                        purpose="definition",
+                        query="Kenya cereal yield decline survey estimates",
+                        purpose="survey estimates",
                         target_gap_ids=[],
                         destination="vectorstore",
                     ),
                     ResearchQuery(
-                        query="Kenya maize unit tonnes reporting period",
-                        purpose="unit",
+                        query="Kenya maize production tonnes table reporting period",
+                        purpose="production table",
                         target_gap_ids=[],
                         destination="vectorstore",
                     ),
@@ -296,7 +309,6 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
         generate_research_queries(
             research_question="Maize production change",
             explanation="Quantify change after drought",
-            unit="percent",
             country_name="Kenya",
             country_iso3="KEN",
             example="Never copy this fabricated 99% figure.",
@@ -312,7 +324,6 @@ def test_generate_research_queries_initial_and_follow_up() -> None:
         generate_research_queries(
             research_question="Maize production change",
             explanation="Quantify change after drought",
-            unit="percent",
             country_name="Kenya",
             country_iso3="KEN",
             established_facts=["Drought occurred in 2016."],

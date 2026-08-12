@@ -1137,7 +1137,8 @@ class PdfEvidenceIngestor:
         if not numbers:
             raise ValueError("evidence unit has no valid source page")
         source_pages = [pages[number - 1] for number in dict.fromkeys(numbers)]
-        source_text = self._exact_source_text(source_text, source_pages)
+        page_texts = self._exact_source_texts_by_page(source_text, source_pages)
+        source_text = "\n".join(page_texts.values()) or None
         regions: list[SourceRegion] = []
         raw_regions = draft.get("regions")
         region_drafts: list[Any] = raw_regions if isinstance(raw_regions, list) else []
@@ -1152,11 +1153,7 @@ class PdfEvidenceIngestor:
             crop = (
                 artifacts.crop(page.physical_page, bbox) if bbox is not None else None
             )
-            text = (
-                source_text
-                if source_text and source_text in page.extracted_text
-                else None
-            )
+            text = page_texts.get(page.physical_page)
             regions.append(
                 SourceRegion(
                     region_id=f"{prefix}:r{index + 1}",
@@ -1530,27 +1527,76 @@ class PdfEvidenceIngestor:
     def _exact_source_text(
         self, proposed_text: str | None, pages: Sequence[RenderedPage]
     ) -> str | None:
-        """Return only source bytes/text extracted locally from the cited page.
+        """Return only source bytes/text extracted locally from the cited page(s).
 
         Gemini often reflows line breaks, ligatures, or Unicode hyphens even when it
         has read the right passage.  A whitespace-flexible match recovers the exact
         local substring.  When it cannot, the whole cited page is safer evidence
         than storing a model-generated transcription as source text.
         """
-        if proposed_text:
-            for page in pages:
-                if proposed_text in page.extracted_text:
-                    return proposed_text
-            terms = [term for term in re.split(r"\s+", proposed_text) if term]
-            if terms:
-                pattern = r"\s+".join(re.escape(term) for term in terms)
-                for page in pages:
-                    match = re.search(pattern, page.extracted_text)
-                    if match is not None:
-                        return match.group(0)
+        page_texts = self._exact_source_texts_by_page(proposed_text, pages)
+        if page_texts:
+            return "\n".join(page_texts.values())
         return next(
             (page.extracted_text for page in pages if page.extracted_text), None
         )
+
+    def _exact_source_texts_by_page(
+        self, proposed_text: str | None, pages: Sequence[RenderedPage]
+    ) -> dict[int, str]:
+        """Map each cited page to the exact local substring matched on that page.
+
+        Column-wrapped passages often span the rightmost column of page N and the
+        leftmost column of page N+1. Match the proposed text greedily across those
+        pages in reading order so one evidence unit keeps both fragments.
+        """
+        if not proposed_text:
+            return {}
+        for page in pages:
+            if proposed_text in page.extracted_text:
+                return {page.physical_page: proposed_text}
+        terms = [term for term in re.split(r"\s+", proposed_text) if term]
+        if not terms:
+            return {}
+        if len(pages) == 1:
+            matched = self._flexible_text_match(terms, pages[0].extracted_text)
+            return {pages[0].physical_page: matched} if matched else {}
+        remaining = terms
+        page_texts: dict[int, str] = {}
+        for page in pages:
+            if not remaining:
+                break
+            matched_terms: list[str] | None = None
+            matched_text: str | None = None
+            for end in range(len(remaining), 0, -1):
+                candidate = remaining[:end]
+                matched = self._flexible_text_match(candidate, page.extracted_text)
+                if matched is not None:
+                    matched_terms = candidate
+                    matched_text = matched
+                    break
+            if matched_terms is None or matched_text is None:
+                if page_texts:
+                    break
+                continue
+            page_texts[page.physical_page] = matched_text
+            remaining = remaining[len(matched_terms) :]
+        if page_texts and not remaining:
+            return page_texts
+        # Fall back to a full flexible match on any single cited page.
+        for page in pages:
+            matched = self._flexible_text_match(terms, page.extracted_text)
+            if matched is not None:
+                return {page.physical_page: matched}
+        return {}
+
+    @staticmethod
+    def _flexible_text_match(terms: Sequence[str], haystack: str) -> str | None:
+        if not terms:
+            return None
+        pattern = r"\s+".join(re.escape(term) for term in terms)
+        match = re.search(pattern, haystack)
+        return match.group(0) if match is not None else None
 
     def _mongo_date_or_none(self, value: Any) -> datetime | None:
         if not isinstance(value, str):

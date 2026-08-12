@@ -133,13 +133,13 @@ class ResearcherConfig(BaseSettings):
     use_visual_evidence: bool = True
     max_visual_chunks_per_iteration: int = 3
     max_visual_artifacts_per_chunk: int = 2
-    target_pdf_claims_per_metric: int = 10
+    target_pdf_claims_per_metric: int = 20
     max_web_claims_per_metric: int = 5
     max_pdf_queries_per_metric: int = 5
     pdf_results_per_query: int = 20
     max_pdf_evidence_to_analyze: int = 50
     claim_extraction_batch_size: int = 5
-    max_claims_per_evidence: int = 3
+    max_claims_per_evidence: int = 5
     max_web_searches_per_metric: int = 5
     max_web_depth: int = 2
     # Retained for environment compatibility; the bounded researcher no longer

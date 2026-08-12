@@ -61,18 +61,21 @@ Critical rules:
 1. Do NOT answer the metric. Output only search queries with purpose and
    destination.
 2. Do NOT invent facts, figures, or conclusions.
-3. Metric.example / example answer defines the desired answer SHAPE only.
-   Infer whether the answer needs a value, percentage, area, numerator,
-   denominator, population, production change, geography, event, or period.
-   Use those measurement concepts to improve queries, but never copy example
-   values, country names, or factual statements.
+3. Ignore Metric.unit completely. Metric.example / example answer defines the
+   desired answer SHAPE only. Infer useful measurement concepts such as value,
+   percentage, area, numerator, denominator, affected population, production
+   change, geography, event, or period, but never copy example values, country
+   names, factual statements, or a bare unit into queries.
 4. Every query must mention or clearly imply the selected country.
 5. Queries must target the metric or an explicitly listed evidence gap.
-6. Seek data that could directly answer the metric. Prefer quantities,
-   requested units, numerator/denominator components, affected population or
-   area, magnitude and direction of change, dates, and subnational geography.
-7. Across the query set, cover direct metric wording, unit/measurement
-   synonyms, quantitative components, table/figure/chart/assessment terms,
+6. Every query must seek quantitative evidence that could directly answer the
+   metric: numerical findings, numerator/denominator components, affected
+   population or area, magnitude and direction of change, dates, and
+   subnational geography. Spell out measurement concepts such as percentage,
+   hectares, tonnes, or number affected when relevant; never emit punctuation
+   or a unit symbol as a query.
+7. Across the query set, cover direct metric wording, measurement synonyms,
+   quantitative components, table/figure/chart/assessment terms,
    and relevant El Nino event periods or sector terminology. Do not spend a
    query on generic definitions, policy background, or broad climate context
    unless the metric itself asks for it.
@@ -140,7 +143,6 @@ class AgentState(BaseModel):
 class ResearchAgentState(BaseModel):
     research_question: str
     explanation: str
-    unit: str
     country_name: str
     country_iso3: str
     example: str | None = None
@@ -192,8 +194,22 @@ def _country_implied(query: str, country_name: str, country_iso3: str) -> bool:
 
 
 def _query_too_broad(query: str) -> bool:
-    tokens = [t for t in re.split(r"\s+", query.strip()) if t]
+    tokens = re.findall(r"[\w]+", query, flags=re.UNICODE)
     return len(tokens) < 3
+
+
+_QUANTITATIVE_QUERY_PATTERN = re.compile(
+    r"\b(?:quantitative|numeric(?:al)?|number|value|figure|statistic(?:s|al)?|"
+    r"data|estimate(?:d|s)?|percentage|percent|proportion|share|rate|ratio|"
+    r"magnitude|change|increase|decrease|decline|trend|hectares?|acres?|"
+    r"tonnes?|tons?|kilograms?|table|chart|assessment|survey)\b",
+    re.IGNORECASE,
+)
+
+
+def _targets_quantitative_evidence(query: str) -> bool:
+    """Return whether a query asks for a measurable result."""
+    return bool(_QUANTITATIVE_QUERY_PATTERN.search(query))
 
 
 def filter_research_queries(
@@ -222,6 +238,9 @@ def filter_research_queries(
             continue
         if _query_too_broad(text):
             logger.info("Rejecting overly broad query: %s", text)
+            continue
+        if not _targets_quantitative_evidence(text):
+            logger.info("Rejecting non-quantitative research query: %s", text)
             continue
         if require_gaps:
             if not item.target_gap_ids:
@@ -286,7 +305,6 @@ def _research_user_prompt(state: ResearchAgentState) -> str:
     parts = [
         f"Metric / research question:\n{state.research_question}",
         f"Analysis required:\n{state.explanation}",
-        f"Expected unit / answer form:\n{state.unit}",
         f"Country: {state.country_name} ({state.country_iso3})",
         (
             f"Generate between {state.min_queries} and {state.max_queries} "
@@ -297,6 +315,10 @@ def _research_user_prompt(state: ResearchAgentState) -> str:
             "(vectorstore|web|both), and target_gap_ids when targeting gaps."
         ),
         "Do not answer the metric. Return only search queries.",
+        (
+            "Ignore the metric Unit field. Write substantive retrieval phrases "
+            "for numerical evidence; never return a bare symbol such as %."
+        ),
     ]
     if state.example:
         parts.insert(
@@ -548,7 +570,6 @@ async def generate_research_queries(
     *,
     research_question: str,
     explanation: str,
-    unit: str,
     country_name: str,
     country_iso3: str,
     example: str | None = None,
@@ -576,7 +597,6 @@ async def generate_research_queries(
             {
                 "research_question": research_question,
                 "explanation": explanation,
-                "unit": unit,
                 "country_name": country_name,
                 "country_iso3": country_iso3,
                 "example": example,
