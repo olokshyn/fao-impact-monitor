@@ -14,11 +14,23 @@ from typing import Annotated, Any
 
 import typer
 
-from fao_impact_monitor.agent.researcher_agent import ResearchVectorStore, research
+from fao_impact_monitor.agent.impact_analyzer_agent import analyze_impact
+from fao_impact_monitor.agent.researcher_agent import (
+    ResearchVectorStore,
+    format_human_markdown,
+    research,
+)
+from fao_impact_monitor.config import get_config
 from fao_impact_monitor.data_lake.mongo import connect_data_lake
 from fao_impact_monitor.data_lake.vectorstore import VectorStore
 from fao_impact_monitor.data_source import get_data_source
 from fao_impact_monitor.data_source.tellus import TellusDataSource
+from fao_impact_monitor.impact_report import (
+    default_impact_analysis_md_path,
+    enrich_structured_latest_values,
+    parse_metric_report_directory,
+    write_impact_analysis_files,
+)
 from fao_impact_monitor.metric.metric import Metric
 from fao_impact_monitor.pdf_pipeline.mongo import connect_pdf_pipeline
 from fao_impact_monitor.pdf_pipeline.retrieval import (
@@ -37,8 +49,10 @@ from fao_impact_monitor.research_report import (
     format_queries_section,
     format_researcher_result,
     format_structured_result,
+    metric_human_report_path,
     metric_path,
     metric_report_path,
+    missing_researcher_process_jobs,
     parse_countries_iso3,
     select_metrics,
     write_metric_report,
@@ -159,6 +173,12 @@ async def _run_one_metric(
             )
             result_md, refs = format_researcher_result(output)
             queries_markdown = format_queries_section(output.query_runs)
+            human_path = metric_human_report_path(output_dir, index)
+            write_metric_report(
+                human_path,
+                format_human_markdown(output, metric=metric, section_number=index),
+            )
+            typer.echo(f"Wrote human report: {human_path}")
             logger.info(
                 "CLI research metric done index=%s name=%r status=%s statements=%s",
                 index,
@@ -202,6 +222,7 @@ async def _run_research(
     use_pdf_vector_store: bool = True,
     web_research_enabled: bool = True,
     data_source: str | None = None,
+    ensure_indexes: bool = True,
 ) -> Path:
     metrics = Metric.from_use_case(use_case_path)
     try:
@@ -252,7 +273,8 @@ async def _run_research(
         if use_pdf_vector_store:
             logger.info("Connecting to PDF evidence vector store for ResearcherAgent")
             client = await connect_pdf_pipeline()
-            await ensure_pdf_pipeline_indexes()
+            if ensure_indexes and get_config().ensure_indexes:
+                await ensure_pdf_pipeline_indexes()
             vector_store = PdfEvidenceVectorStore()
         else:
             logger.info("Connecting to data lake / vector store for ResearcherAgent")
@@ -305,6 +327,7 @@ def _research_process_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 max_parallel=max(1, len(metric_indices)),
                 use_pdf_vector_store=kind == "researcher",
                 data_source=payload.get("data_source"),
+                ensure_indexes=False,
             )
         )
     except Exception as exc:
@@ -334,25 +357,47 @@ def _research_process_worker(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _ensure_pdf_pipeline_indexes_once() -> None:
+    """Create PDF search indexes in the parent process before workers start."""
+    client = await connect_pdf_pipeline()
+    try:
+        await ensure_pdf_pipeline_indexes()
+    finally:
+        await client.close()
+
+
 def _run_research_parallel(
     *,
     use_case_path: Path,
     countries_iso3: list[str],
     output_root: Path,
     jobs: list[MetricProcessJob] | None = None,
+    continue_incomplete: bool = False,
 ) -> list[dict[str, Any]]:
     """Spawn one process per (country, metric-process-job) pair."""
     metrics = Metric.from_use_case(use_case_path)
-    process_jobs = jobs if jobs is not None else build_metric_process_jobs(metrics)
-    if not process_jobs:
-        raise typer.BadParameter(f"No metrics found in use-case {use_case_path}")
     if not countries_iso3:
         raise typer.BadParameter("At least one ISO3 country code is required")
+
+    shared_jobs: list[MetricProcessJob] | None = None
+    if not continue_incomplete:
+        shared_jobs = jobs if jobs is not None else build_metric_process_jobs(metrics)
+        if not shared_jobs:
+            raise typer.BadParameter(f"No metrics found in use-case {use_case_path}")
 
     payloads: list[dict[str, Any]] = []
     for country_iso3 in countries_iso3:
         output_dir = output_root / use_case_path.stem / country_iso3.upper()
-        for job in process_jobs:
+        if continue_incomplete:
+            country_jobs = missing_researcher_process_jobs(metrics, output_dir)
+            logger.info(
+                "Continue country=%s missing_text_metrics=%s",
+                country_iso3.upper(),
+                [job.metric_indices[0] for job in country_jobs],
+            )
+        else:
+            country_jobs = shared_jobs or []
+        for job in country_jobs:
             payloads.append(
                 {
                     "use_case_path": str(use_case_path),
@@ -364,17 +409,41 @@ def _run_research_parallel(
                 }
             )
 
-    typer.echo(
-        f"Launching {len(payloads)} process(es) "
-        f"({len(countries_iso3)} country(ies) × {len(process_jobs)} job(s)) "
-        f"for use-case {use_case_path}"
-    )
-    logger.info(
-        "Research-parallel plan: countries=%s jobs=%s total_processes=%s",
-        countries_iso3,
-        [(job.kind, job.metric_indices, job.data_source) for job in process_jobs],
-        len(payloads),
-    )
+    if continue_incomplete:
+        typer.echo(
+            f"Continue: launching {len(payloads)} missing text metric process(es) "
+            f"for use-case {use_case_path}"
+        )
+        logger.info(
+            "Research-parallel continue: countries=%s total_processes=%s",
+            countries_iso3,
+            len(payloads),
+        )
+    else:
+        typer.echo(
+            f"Launching {len(payloads)} process(es) "
+            f"({len(countries_iso3)} country(ies) × {len(shared_jobs or [])} job(s)) "
+            f"for use-case {use_case_path}"
+        )
+        logger.info(
+            "Research-parallel plan: countries=%s jobs=%s total_processes=%s",
+            countries_iso3,
+            [
+                (job.kind, job.metric_indices, job.data_source)
+                for job in (shared_jobs or [])
+            ],
+            len(payloads),
+        )
+
+    if not payloads:
+        return []
+
+    if get_config().ensure_indexes and any(
+        payload["kind"] == "researcher" for payload in payloads
+    ):
+        logger.info("Ensuring PDF search indexes before spawning research workers")
+        typer.echo("Ensuring PDF search indexes")
+        asyncio.run(_ensure_pdf_pipeline_indexes_once())
 
     results: list[dict[str, Any]] = []
     context = multiprocessing.get_context("spawn")
@@ -459,7 +528,8 @@ async def _run_pdf_embedding_search(
     """Search and print raw PDF embedding representations."""
     client = await connect_pdf_pipeline()
     try:
-        await ensure_pdf_pipeline_indexes()
+        if get_config().ensure_indexes:
+            await ensure_pdf_pipeline_indexes()
         rows = await PdfEvidenceVectorStore().search_embeddings(
             query,
             countries_iso3=[country_iso3] if country_iso3 else None,
@@ -634,6 +704,17 @@ def research_parallel_command(
             path_type=Path,
         ),
     ] = Path("reports"),
+    continue_incomplete: Annotated[
+        bool,
+        typer.Option(
+            "--continue",
+            help=(
+                "Run only researcher (text) metrics that do not yet have a "
+                "report file. Skips World Bank, FAOSTAT, and EM-DAT, and "
+                "spawns processes only for the missing text metrics."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run all metrics across countries in separate OS processes."""
     _configure_logging()
@@ -645,6 +726,7 @@ def research_parallel_command(
         use_case_path=use_case,
         countries_iso3=countries_iso3,
         output_root=output_root,
+        continue_incomplete=continue_incomplete,
     )
     failed = [result for result in results if not result["ok"]]
     typer.echo(
@@ -761,6 +843,116 @@ def pdf_search_command(
     )
 
 
+async def _run_impact_report(
+    *,
+    use_case_path: Path,
+    countries_iso3: list[str],
+    input_root: Path,
+    output_root: Path,
+) -> list[Path]:
+    """Parse metric reports and write impact-analysis markdown + PDF per country."""
+    written: list[Path] = []
+    failures: list[str] = []
+    for country_iso3 in countries_iso3:
+        iso3 = country_iso3.upper()
+        input_dir = input_root / use_case_path.stem / iso3
+        output_md = default_impact_analysis_md_path(
+            iso3, use_case=use_case_path, output_root=output_root
+        )
+        try:
+            reports = parse_metric_report_directory(input_dir)
+            await enrich_structured_latest_values(
+                reports,
+                country_iso3=iso3,
+                use_case_path=use_case_path,
+            )
+            output = await analyze_impact(
+                country_iso3=iso3,
+                reports=reports,
+            )
+            md_path, pdf_path = write_impact_analysis_files(
+                markdown_text=output.markdown,
+                output_md=output_md,
+            )
+        except Exception as exc:
+            logger.exception("Impact report failed for %s", iso3)
+            failures.append(f"{iso3}: {exc}")
+            typer.echo(f"FAILED {iso3}: {exc}", err=True)
+            continue
+        written.extend([md_path, pdf_path])
+        typer.echo(f"Wrote impact analysis: {md_path}")
+        typer.echo(f"Wrote impact PDF: {pdf_path}")
+    if failures:
+        raise RuntimeError("Impact report failed for " + "; ".join(failures))
+    return written
+
+
+@app.command("impact-report")
+def impact_report_command(
+    countries: Annotated[
+        str,
+        typer.Option(
+            "--countries",
+            help="Comma-separated ISO3 country codes (e.g. ETH,KEN,MWI).",
+        ),
+    ],
+    use_case: Annotated[
+        Path,
+        typer.Option(
+            "--use-case",
+            help="Path to use-case JSON with metrics and default data_sources.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            path_type=Path,
+        ),
+    ] = _DEFAULT_USE_CASE,
+    input_root: Annotated[
+        Path,
+        typer.Option(
+            "--input-root",
+            help=(
+                "Root directory containing per-country metric reports "
+                "(default: reports/; reads <root>/<USE_CASE>/<COUNTRY>/)."
+            ),
+            path_type=Path,
+        ),
+    ] = Path("reports"),
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help=(
+                "Root directory for <ISO3> impact analysis <name>.md/.pdf "
+                "(default: reports/; writes <root>/<USE_CASE>/<COUNTRY>/)."
+            ),
+            path_type=Path,
+        ),
+    ] = Path("reports"),
+) -> None:
+    """Compile cited El Niño impact analyses from per-metric research reports."""
+    _configure_logging()
+    try:
+        countries_iso3 = parse_countries_iso3(countries)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    try:
+        written = asyncio.run(
+            _run_impact_report(
+                use_case_path=use_case,
+                countries_iso3=countries_iso3,
+                input_root=input_root,
+                output_root=output_root,
+            )
+        )
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Wrote {len(written)} file(s) under: {output_root / use_case.stem}")
+
+
 @app.command("report-pdf")
 def report_pdf_command(
     country: Annotated[
@@ -799,19 +991,35 @@ def report_pdf_command(
             "--output",
             help=(
                 "Output PDF path (default from use-case "
-                "report_pdf_template, e.g. reports/el-nino/ETH/El Niño - ETH.pdf)."
+                "report_pdf_template, e.g. reports/el-nino/ETH/ETH metrics El Nino.pdf; "
+                "with --human, '... - human.pdf')."
             ),
             path_type=Path,
         ),
     ] = None,
+    human: Annotated[
+        bool,
+        typer.Option(
+            "--human",
+            help=(
+                "Use NNNN-H.md for researcher metrics. World Bank / FAOSTAT "
+                "keep plots but drop machine Seq Number fields. "
+                "Writes '... - human.pdf' by default."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Combine per-metric markdown reports into a single PDF."""
     _configure_logging()
     country_iso3 = country.upper()
     source_dir = input_dir or default_research_dir(country_iso3, use_case=use_case)
-    output_path = output or default_research_pdf_path(country_iso3, use_case=use_case)
+    output_path = output or default_research_pdf_path(
+        country_iso3, use_case=use_case, human=human
+    )
     try:
-        written = build_research_pdf(input_dir=source_dir, output_path=output_path)
+        written = build_research_pdf(
+            input_dir=source_dir, output_path=output_path, human=human
+        )
     except FileNotFoundError as exc:
         raise typer.BadParameter(str(exc)) from exc
     except RuntimeError as exc:

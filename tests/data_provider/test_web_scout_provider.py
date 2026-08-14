@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from fao_impact_monitor.data_provider import web_scout_provider as wsp
 from fao_impact_monitor.data_provider.web_scout_provider import (
     WebScoutProviderError,
+    default_instance_for_schema_echo,
     map_web_research_result,
     run_web_scout_research,
     unwrap_schema_shaped_instance,
@@ -162,6 +163,80 @@ def test_unwrap_schema_shaped_instance_ignores_pure_schema() -> None:
     assert unwrap_schema_shaped_instance(payload) is None
 
 
+def test_default_instance_for_schema_echo_coverage_evaluation() -> None:
+    class CoverageEvaluation(BaseModel):
+        fully_answered: bool
+        gaps: str
+        promising_unscraped_urls: list[str] = Field(default_factory=list)
+        needs_new_searches: bool = True
+
+    payload = {
+        "description": (
+            "LLM output for evaluating coverage and routing the next pipeline step."
+        ),
+        "properties": {
+            "fully_answered": {
+                "description": (
+                    "True if the extracted content fully answers the original "
+                    "research query."
+                ),
+                "title": "Fully Answered",
+                "type": "boolean",
+            },
+            "gaps": {
+                "description": (
+                    "If not fully answered, what specific information is still missing?"
+                ),
+                "title": "Gaps",
+                "type": "string",
+            },
+            "promising_unscraped_urls": {
+                "description": (
+                    "If not fully answered, list exact URLs from the "
+                    "Unscraped Candidates that likely contain the missing "
+                    "information. Leave empty if none are promising."
+                ),
+                "items": {"type": "string"},
+                "title": "Promising Unscraped Urls",
+                "type": "array",
+            },
+            "needs_new_searches": {
+                "default": True,
+                "description": (
+                    "True if the unscraped candidates are insufficient and "
+                    "new web searches must be run. False if "
+                    "promising_unscraped_urls candidates are enough to try "
+                    "first."
+                ),
+                "title": "Needs New Searches",
+                "type": "boolean",
+            },
+        },
+        "required": [
+            "fully_answered",
+            "gaps",
+            "promising_unscraped_urls",
+            "needs_new_searches",
+        ],
+        "title": "CoverageEvaluation",
+        "type": "object",
+        "propertyOrdering": [
+            "fully_answered",
+            "gaps",
+            "promising_unscraped_urls",
+            "needs_new_searches",
+        ],
+    }
+    assert unwrap_schema_shaped_instance(payload) is None
+    defaults = default_instance_for_schema_echo(CoverageEvaluation, payload)
+    assert defaults == {
+        "fully_answered": False,
+        "gaps": wsp._SCHEMA_ECHO_GAPS,
+        "promising_unscraped_urls": [],
+        "needs_new_searches": True,
+    }
+
+
 def test_schema_envelope_patch_recovers_coverage_evaluation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,3 +274,84 @@ def test_schema_envelope_patch_recovers_coverage_evaluation(
     assert parsed.gaps == "Need more data"
     assert parsed.promising_unscraped_urls == ["https://example.org/doc"]
     assert parsed.needs_new_searches is False
+
+
+def test_schema_envelope_patch_recovers_pure_schema_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini sometimes returns the schema itself; recover with defaults."""
+
+    class CoverageEvaluation(BaseModel):
+        fully_answered: bool
+        gaps: str
+        promising_unscraped_urls: list[str] = Field(default_factory=list)
+        needs_new_searches: bool = True
+
+    monkeypatch.setattr(wsp, "_SCHEMA_ENVELOPE_PATCHED", False)
+    wsp._patch_agents_schema_envelope_validation()
+
+    from agents.agent_output import AgentOutputSchema
+
+    schema = AgentOutputSchema(CoverageEvaluation)
+    pure_schema = {
+        "description": (
+            "LLM output for evaluating coverage and routing the next pipeline step."
+        ),
+        "properties": {
+            "fully_answered": {
+                "description": (
+                    "True if the extracted content fully answers the original "
+                    "research query."
+                ),
+                "title": "Fully Answered",
+                "type": "boolean",
+            },
+            "gaps": {
+                "description": (
+                    "If not fully answered, what specific information is still missing?"
+                ),
+                "title": "Gaps",
+                "type": "string",
+            },
+            "promising_unscraped_urls": {
+                "description": (
+                    "If not fully answered, list exact URLs from the "
+                    "Unscraped Candidates that likely contain the missing "
+                    "information. Leave empty if none are promising."
+                ),
+                "items": {"type": "string"},
+                "title": "Promising Unscraped Urls",
+                "type": "array",
+            },
+            "needs_new_searches": {
+                "default": True,
+                "description": (
+                    "True if the unscraped candidates are insufficient and "
+                    "new web searches must be run. False if "
+                    "promising_unscraped_urls candidates are enough to try "
+                    "first."
+                ),
+                "title": "Needs New Searches",
+                "type": "boolean",
+            },
+        },
+        "required": [
+            "fully_answered",
+            "gaps",
+            "promising_unscraped_urls",
+            "needs_new_searches",
+        ],
+        "title": "CoverageEvaluation",
+        "type": "object",
+        "propertyOrdering": [
+            "fully_answered",
+            "gaps",
+            "promising_unscraped_urls",
+            "needs_new_searches",
+        ],
+    }
+    parsed = schema.validate_json(json.dumps(pure_schema))
+    assert parsed.fully_answered is False
+    assert parsed.gaps == wsp._SCHEMA_ECHO_GAPS
+    assert parsed.promising_unscraped_urls == []
+    assert parsed.needs_new_searches is True

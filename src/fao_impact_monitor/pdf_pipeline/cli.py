@@ -231,3 +231,32 @@ def ingest(
             result["failed"],
         )
     typer.echo(result)
+
+
+@app.command("ensure-indexes")
+def ensure_indexes_command(
+    recreate: bool = typer.Option(
+        False,
+        "--recreate",
+        help="Drop existing PDF search indexes and create them again.",
+    ),
+) -> None:
+    """Create Atlas Search indexes for the PDF evidence collection."""
+    _configure_logging()
+
+    async def run() -> None:
+        logger.info("Connecting to MongoDB")
+        client = await connect_pdf_pipeline()
+        try:
+            logger.info(
+                "Recreating PDF search indexes"
+                if recreate
+                else "Ensuring PDF search indexes"
+            )
+            await ensure_pdf_pipeline_indexes(recreate=recreate)
+        finally:
+            await client.close()
+            logger.info("MongoDB connection closed")
+
+    asyncio.run(run())
+    typer.echo("PDF search indexes are ready")

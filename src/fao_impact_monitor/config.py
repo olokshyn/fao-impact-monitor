@@ -153,6 +153,26 @@ class ResearcherConfig(BaseSettings):
     max_agent_retries: int = 3
 
 
+class ImpactAnalyzerConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="IMPACT_ANALYZER_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-sol"
+    # Faster models for high-volume filter/verify; Sol stays on the draft.
+    filter_llm_model: str = "openai:openai.gpt-5.6-luna"
+    verifier_llm_model: str = "openai:openai.gpt-5.6-luna"
+    reasoning_effort: str = "high"
+    max_answer_verification_retries: int = 1
+    country_filter_batch_size: int = 25
+    verify_concurrency: int = 6
+    max_source_text_chars: int = 2_500
+    # High-detail plots are expensive; reserve them for risk-opening indicators.
+    default_plot_detail: str = "low"
+    risk_plot_detail: str = "high"
+
+
 class TellusConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TELLUS_",
@@ -225,10 +245,14 @@ class Config(BaseSettings):
     country_detect: CountryDetectConfig = Field(default_factory=CountryDetectConfig)
     query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)
     researcher: ResearcherConfig = Field(default_factory=ResearcherConfig)
+    impact_analyzer: ImpactAnalyzerConfig = Field(default_factory=ImpactAnalyzerConfig)
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)
     hydra: HydraConfig = Field(default_factory=HydraConfig)
+    # Recreate Atlas Search indexes on research start. Default off; set
+    # ENSURE_INDEXES=true only after changing index definitions.
+    ensure_indexes: bool = False
 
 
 def get_config() -> Config:

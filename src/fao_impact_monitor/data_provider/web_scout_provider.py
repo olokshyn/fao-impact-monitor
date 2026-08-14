@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import types
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field
+from pydantic_core import PydanticUndefined
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ _SCHEMA_META_KEYS = frozenset(
     }
 )
 _SCHEMA_ENVELOPE_PATCHED = False
+_SCHEMA_ECHO_GAPS = "Coverage evaluator returned a schema echo instead of field values."
 
 
 class WebScoutProviderError(RuntimeError):
@@ -92,6 +95,16 @@ def _looks_like_json_schema_field(value: Any) -> bool:
     }
 
 
+def _is_schema_envelope(data: dict[str, Any]) -> bool:
+    props = data.get("properties")
+    if data.get("type") != "object" or not isinstance(props, dict) or not props:
+        return False
+    return any(
+        key in data
+        for key in ("title", "required", "description", "additionalProperties")
+    )
+
+
 def unwrap_schema_shaped_instance(data: Any) -> dict[str, Any] | None:
     """Unwrap instance values nested under a JSON Schema envelope.
 
@@ -99,19 +112,76 @@ def unwrap_schema_shaped_instance(data: Any) -> dict[str, Any] | None:
     field values under ``properties``. That fails Pydantic validation for
     web-scout models such as ``CoverageEvaluation``.
     """
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or not _is_schema_envelope(data):
         return None
-    props = data.get("properties")
-    if data.get("type") != "object" or not isinstance(props, dict) or not props:
-        return None
-    if not any(
-        key in data
-        for key in ("title", "required", "description", "additionalProperties")
-    ):
-        return None
+    props = data["properties"]
+    assert isinstance(props, dict)
     if any(_looks_like_json_schema_field(value) for value in props.values()):
         return None
     return props
+
+
+def _annotation_fallback(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        non_none = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(non_none) == 1:
+            return _annotation_fallback(non_none[0])
+    if origin is list:
+        return []
+    if origin is dict:
+        return {}
+    if annotation is bool:
+        return False
+    if annotation is str:
+        return ""
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    return None
+
+
+def _field_fallback(field_name: str, field_info: Any) -> Any:
+    if field_info.default_factory is not None:
+        return field_info.default_factory()
+    if field_info.default is not PydanticUndefined:
+        return field_info.default
+    if field_name == "gaps":
+        return _SCHEMA_ECHO_GAPS
+    return _annotation_fallback(field_info.annotation)
+
+
+def default_instance_for_schema_echo(
+    output_type: Any, data: Any
+) -> dict[str, Any] | None:
+    """Build conservative field values when the LLM echoes a pure JSON Schema.
+
+    Gemini sometimes returns the output schema itself (property definitions)
+    instead of an instance. There are no recoverable values, so synthesize a
+    safe default dict from the Pydantic model so validation can proceed.
+    """
+    if not isinstance(data, dict) or not _is_schema_envelope(data):
+        return None
+    if not isinstance(output_type, type) or not issubclass(output_type, BaseModel):
+        return None
+    props = data.get("properties")
+    if not isinstance(props, dict):
+        return None
+    fields = output_type.model_fields
+    if not fields or set(props) != set(fields):
+        return None
+    if not all(_looks_like_json_schema_field(value) for value in props.values()):
+        return None
+
+    instance: dict[str, Any] = {}
+    for name, field_info in fields.items():
+        prop = props[name]
+        if isinstance(prop, dict) and "const" in prop:
+            instance[name] = prop["const"]
+        else:
+            instance[name] = _field_fallback(name, field_info)
+    return instance
 
 
 def _patch_agents_schema_envelope_validation() -> None:
@@ -136,15 +206,22 @@ def _patch_agents_schema_envelope_validation() -> None:
                 parsed = json.loads(json_str)
             except json.JSONDecodeError:
                 raise exc from None
-            unwrapped = unwrap_schema_shaped_instance(parsed)
-            if unwrapped is None:
+            recovered = unwrap_schema_shaped_instance(parsed)
+            if recovered is not None:
+                logger.warning(
+                    "Recovered structured output nested under a JSON Schema "
+                    "envelope for %s",
+                    self.name(),
+                )
+                return original_validate_json(self, json.dumps(recovered))
+            recovered = default_instance_for_schema_echo(self.output_type, parsed)
+            if recovered is None:
                 raise
             logger.warning(
-                "Recovered structured output nested under a JSON Schema "
-                "envelope for %s",
+                "Recovered pure JSON Schema echo for %s with conservative defaults",
                 self.name(),
             )
-            return original_validate_json(self, json.dumps(unwrapped))
+            return original_validate_json(self, json.dumps(recovered))
 
     AgentOutputSchema.validate_json = validate_json  # type: ignore[method-assign]
     _SCHEMA_ENVELOPE_PATCHED = True

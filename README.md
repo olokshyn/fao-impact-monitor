@@ -61,6 +61,35 @@ uv run pipeline research \
   --source emdat
 ```
 
+Compile a cited El Niño impact analysis (markdown + PDF) from existing
+per-metric reports for one or more countries:
+
+```bash
+uv run pipeline impact-report \
+  --countries ETH,KEN,MWI \
+  --use-case use-cases/el-nino.json
+```
+
+Outputs `reports/<USE_CASE>/<COUNTRY>/<ISO3> impact analysis <use-case.name>.md`
+and the matching `.pdf` (e.g. `ETH impact analysis El Nino.pdf`).
+
+Combined per-metric PDFs use
+`<ISO3> metrics <use-case.name>.pdf` (e.g. `ETH metrics El Nino.pdf`).
+Researcher (text) metrics also write a human-readable twin
+(`NNNN-H.md`) next to the machine-readable `NNNN.md`. Build the PDF from
+those human summaries with `--human`. World Bank / FAOSTAT sections use
+`# N. Title`, Description, Example, plots, and References (plots stay
+embedded). The file is written as
+`<ISO3> metrics <use-case.name> - human.pdf`
+(e.g. `FJI metrics El Nino - human.pdf`):
+
+```bash
+uv run pipeline report-pdf \
+  --country ETH \
+  --use-case use-cases/el-nino.json \
+  --human
+```
+
 ### Local MongoDB (debug)
 
 For interactive debugging of Atlas Search / Vector Search (`$search`, `$vectorSearch`, `$rankFusion`), start a persistent local Atlas-compatible MongoDB:

@@ -160,36 +160,62 @@ measures the metric subject (including related quantitative forms in a
 different unit). Context is relevant supporting evidence that must remain
 clearly separate and must not be worded as though it answers the metric.
 
-Primary goal: answer with QUANTITATIVE data whenever the claims allow —
-percentages, hectares/area, tonnes/production, yield change, livestock heads
-lost, people/households affected when tied to the metric, and other values
-that measure the metric subject (requested unit or a related quantitative
-form). Prefer statements that report magnitudes over purely narrative
-descriptions of weather or events ("heavy rains began", "floods occurred")
-when both are available.
+Primary goal: answer with QUANTITATIVE data for the selected country (or its
+subnational units) whenever the claims allow — percentages, hectares/area,
+tonnes/production, yield change, livestock heads lost, people/households
+affected when tied to the metric, and other values that measure the metric
+subject (requested unit or a related quantitative form). Prefer statements
+that report magnitudes over purely narrative descriptions of weather or
+events ("heavy rains began", "floods occurred") when both are available.
+The answer must include quantitative country-level or subnational-level
+figures from the claims when any such figures exist.
+
+Temporal coverage: when quantitative national or subnational data for
+different time periods is present, use all such data. Report each period's
+figures and compare how the values changed year over year (or period over
+period), citing the supporting claims. Do not drop older periods when newer
+ones exist unless they are true duplicates of the same figure.
+
+Geographic evidence scope:
+- Use only evidence that applies to the selected country. A claim or source
+  may mention other countries; ignore figures and facts for those other
+  countries and never attribute them to the selected country.
+- You may also use evidence for a broader geographic region that the
+  selected country belongs to (e.g. East Africa, sub-Saharan Africa for
+  Ethiopia), provided the claim states that regional scope. Always prefer
+  more specific national or subnational data over broader regional data
+  when both are available.
+- If a claim reports a global, worldwide, or other aggregate that is not
+  the selected country and not a region it belongs to, keep that scope
+  only as context when needed; never reattribute such a figure to the
+  selected country unless the claim itself names that country.
 
 When the claims only partially cover the metric, still emit every statement
-that is supported. Incomplete event coverage is fine — report the events and
-geographies you can support, and omit the rest without inventing numbers.
-If only qualitative claims exist, still draft those statements (best-effort);
-do not invent numbers to fill gaps.
+that is supported for the selected country (or an allowed broader region).
+Incomplete event coverage is fine — report the events and geographies you
+can support, and omit the rest without inventing numbers. If only
+qualitative claims exist for the country, still draft those statements
+(best-effort); do not invent numbers to fill gaps.
 
 Critical rules:
 1. Preserve and foreground quantitative information from the claims (include
-   the number and unit in the statement text).
-2. Cover every supplied claim in at least one independently verifiable
-   statement. Combine compatible claims when that makes the answer clearer.
+   the number and unit in the statement text), especially country-level and
+   subnational-level magnitudes.
+2. Cover every supplied claim that is in scope for the selected country (or
+   an allowed broader region it belongs to) in at least one independently
+   verifiable statement. Skip claim content that only concerns other
+   countries. Combine compatible claims when that makes the answer clearer.
 3. Every factual statement must cite all claim_ids that support it. Never mix
    answer and context claims in the same statement.
 4. Preserve all material qualifiers from claims (country, date/period, unit,
    population, geography, uncertainty, observed vs estimated/projected,
    correlation vs causation).
-5. Geographic scope is material: if a claim reports a global, worldwide, or
-   aggregate-total result, keep that scope (say global/worldwide). Never
-   reattribute such a figure to the selected country unless the claim itself
-   names that country.
+5. Geographic scope is material: never reattribute another country's figure,
+   or a global/worldwide/unrelated-aggregate figure, to the selected
+   country. When using regional evidence, keep the regional scope explicit.
 6. Prefer newer / more recent sources over older ones when claims conflict,
-   overlap, or offer alternative figures for the same aspect.
+   overlap, or offer alternative figures for the same aspect. Prefer
+   national/subnational over broader regional figures for the same aspect.
 7. Preserve the supplied answer/context distinction and state exactly what
    quantity or relationship the source measured.
 8. Do not calculate unless inputs and formula are supported by claims and
@@ -1042,6 +1068,95 @@ def build_final_summary(statements: Sequence[AnswerStatement]) -> str:
         else:
             parts.append(statement.text)
     return "\n\n".join(parts)
+
+
+def _ensure_statement_citations(output: ResearcherOutput) -> list[AnswerStatement]:
+    sources = {source.source_id: source for source in output.sources}
+    filled: list[AnswerStatement] = []
+    for statement in output.statements:
+        if statement.citations:
+            filled.append(statement)
+            continue
+        filled.append(
+            statement.model_copy(
+                update={
+                    "citations": resolve_statement_citations(
+                        statement, output.claims, sources
+                    )
+                }
+            )
+        )
+    return filled
+
+
+def format_human_markdown(
+    output: ResearcherOutput,
+    *,
+    metric: Metric,
+    section_number: int,
+) -> str:
+    """Render the human-readable twin of a researcher metric report.
+
+    Uses already-validated statements, citations, and gaps. Does not call
+    the model again.
+    """
+    statements = _ensure_statement_citations(output)
+    answers = [
+        statement for statement in statements if statement.statement_type == "answer"
+    ]
+    context = sorted(
+        statements,
+        key=lambda statement: (
+            int(_contains_quantity(statement.text)),
+            int(statement.statement_type == "answer"),
+            -len(statement.text),
+        ),
+        reverse=True,
+    )
+    context_body = (
+        build_final_summary(context)
+        if context
+        else "No relevant evidence was retained."
+    )
+    if answers:
+        answer_body = build_final_summary(answers)
+    else:
+        answer_body = (
+            f"The available evidence cannot answer this metric for {output.country}."
+        )
+    unresolved = [
+        gap for gap in output.open_gaps if gap.status in {"open", "unresolvable"}
+    ]
+    gap_body = (
+        "\n".join(_format_gap_markdown(gap) for gap in unresolved)
+        if unresolved
+        else "None."
+    )
+    unit = metric.unit or "(none)"
+    return "\n".join(
+        [
+            f"# {section_number}. {metric.name}",
+            "",
+            f"**Description:** {metric.description}",
+            "",
+            f"**Example:** {metric.example}",
+            "",
+            f"**Unit:** {unit}",
+            "",
+            "## Context",
+            "",
+            context_body,
+            "",
+            "## Answer",
+            "",
+            answer_body,
+            "",
+            "## Gaps",
+            "",
+            gap_body,
+            "",
+        ]
+    )
 
 
 def statements_have_quantitative_evidence(

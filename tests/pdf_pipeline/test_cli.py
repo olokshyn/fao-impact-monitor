@@ -17,6 +17,13 @@ def test_ingest_help_exposes_process_worker_option() -> None:
     assert "worker processes" in result.stdout
 
 
+def test_ensure_indexes_help_exposes_recreate_option() -> None:
+    result = CliRunner().invoke(cli.app, ["ensure-indexes", "--help"])
+
+    assert result.exit_code == 0
+    assert "--recreate" in result.stdout
+
+
 def test_directory_runner_uses_spawned_process_pool(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from pymongo.errors import OperationFailure
 from pymongo.operations import SearchIndexModel
 
 from fao_impact_monitor.config import PdfPipelineConfig, VectorStoreConfig, get_config
@@ -20,6 +22,10 @@ from fao_impact_monitor.utils.document_uri import file_document_uri
 
 AggregateFn = Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
 EmbedQueryFn = Callable[[str], Awaitable[list[float]]]
+
+_INDEX_NOT_FOUND = 27
+_INDEX_ALREADY_EXISTS = 68
+_BUILDING_STATUSES = frozenset({"PENDING", "BUILDING", "IN_PROGRESS", "DOES_NOT_EXIST"})
 
 
 def vector_index_definition(config: PdfPipelineConfig | None = None) -> dict[str, Any]:
@@ -72,30 +78,117 @@ def _filter(countries: Sequence[str] | None) -> dict[str, Any]:
     return result
 
 
+def _search_definition(existing: Mapping[str, Any] | None) -> Any:
+    if existing is None:
+        return None
+    return existing.get("latestDefinition", existing.get("definition"))
+
+
+def _definitions_compatible(actual: Any, desired: Any) -> bool:
+    """True when ``desired`` is structurally contained in ``actual``.
+
+    Atlas Search may add default fields to a stored definition, so exact
+    equality would recreate indexes on every call.
+    """
+    if actual == desired:
+        return True
+    if isinstance(desired, dict) and isinstance(actual, dict):
+        return all(
+            key in actual and _definitions_compatible(actual[key], value)
+            for key, value in desired.items()
+        )
+    if isinstance(desired, list) and isinstance(actual, list):
+        if len(desired) != len(actual):
+            return False
+        return all(
+            _definitions_compatible(item, want)
+            for item, want in zip(actual, desired, strict=True)
+        )
+    return False
+
+
+def _is_missing_search_index(exc: OperationFailure) -> bool:
+    if exc.code == _INDEX_NOT_FOUND:
+        return True
+    return "not found" in str(exc).lower()
+
+
+def _is_search_index_already_exists(exc: OperationFailure) -> bool:
+    if exc.code == _INDEX_ALREADY_EXISTS:
+        return True
+    message = str(exc).lower()
+    return "already exists" in message or "duplicate index" in message
+
+
+def _is_search_index_management_unavailable(exc: OperationFailure) -> bool:
+    return "search index management" in str(exc).lower()
+
+
+async def _list_search_indexes_by_name(
+    collection: Any,
+    *,
+    attempts: int = 30,
+    delay_seconds: float = 2.0,
+) -> dict[Any, Any]:
+    last_error: OperationFailure | None = None
+    for _ in range(attempts):
+        try:
+            return {
+                row.get("name"): row
+                async for row in await collection.list_search_indexes()
+            }
+        except OperationFailure as exc:
+            if not _is_search_index_management_unavailable(exc):
+                raise
+            last_error = exc
+            await asyncio.sleep(delay_seconds)
+    assert last_error is not None
+    raise last_error
+
+
 async def ensure_pdf_pipeline_indexes(
     config: PdfPipelineConfig | None = None,
+    *,
+    recreate: bool = False,
 ) -> None:
-    """Create isolated Atlas indexes without altering data-lake index definitions."""
+    """Create isolated Atlas indexes without altering data-lake index definitions.
+
+    Safe under concurrent research workers: a missing index on drop and an
+    already-existing index on create are ignored, and in-progress indexes are
+    left for the process that started them. ``recreate=True`` drops and
+    rebuilds even when a compatible index already exists.
+    """
     collection = PdfEmbeddingRecord.get_pymongo_collection()
     await collection.create_index([("pipeline", 1), ("owner_id", 1)])
     await collection.create_index([("pipeline", 1), ("section_id", 1)])
-    existing = {
-        row.get("name"): row async for row in await collection.list_search_indexes()
-    }
+    existing = await _list_search_indexes_by_name(collection)
     for spec in (vector_index_definition(config), text_index_definition(config)):
         name = spec["name"]
         prior = existing.get(name)
         desired = spec["definition"]
-        actual = (
-            prior.get("latestDefinition", prior.get("definition")) if prior else None
-        )
-        if prior is not None and actual == desired:
+        actual = _search_definition(prior)
+        status = str((prior or {}).get("status") or "").upper()
+        if (
+            not recreate
+            and prior is not None
+            and _definitions_compatible(actual, desired)
+        ):
             continue
-        if prior is not None:
-            await collection.drop_search_index(name)
-        await collection.create_search_index(
-            SearchIndexModel(name=name, type=spec["type"], definition=desired)
-        )
+        if not recreate and prior is not None and status in _BUILDING_STATUSES:
+            continue
+        if prior is not None or recreate:
+            try:
+                await collection.drop_search_index(name)
+            except OperationFailure as exc:
+                if not _is_missing_search_index(exc):
+                    raise
+        try:
+            await collection.create_search_index(
+                SearchIndexModel(name=name, type=spec["type"], definition=desired)
+            )
+        except OperationFailure as exc:
+            if not _is_search_index_already_exists(exc):
+                raise
 
 
 def hybrid_pipeline(

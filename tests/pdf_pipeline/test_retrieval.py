@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from beanie import PydanticObjectId
+from pymongo.errors import OperationFailure
 
 from fao_impact_monitor.config import PdfPipelineConfig
 from fao_impact_monitor.pdf_pipeline.ingest import PdfEvidenceIngestor
@@ -18,6 +19,7 @@ from fao_impact_monitor.pdf_pipeline.models import (
     EvidenceUnit,
     ModelVersions,
     PdfDocumentRecord,
+    PdfEmbeddingRecord,
     PromptVersions,
     SourceRegion,
     ValidationResult,
@@ -25,6 +27,7 @@ from fao_impact_monitor.pdf_pipeline.models import (
 )
 from fao_impact_monitor.pdf_pipeline.retrieval import (
     PdfEvidenceVectorStore,
+    ensure_pdf_pipeline_indexes,
     hybrid_pipeline,
     text_index_definition,
     vector_index_definition,
@@ -198,3 +201,200 @@ def test_search_embeddings_returns_raw_representations_without_deduplication() -
     pipeline = captured["pipeline"]
     assert isinstance(pipeline, list)
     assert pipeline[-2] == {"$limit": 2}
+
+
+class _SearchIndexCursor:
+    def __init__(self, docs: list[dict[str, Any]]) -> None:
+        self._docs = docs
+
+    def __aiter__(self) -> _SearchIndexCursor:
+        self._iter = iter(self._docs)
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        try:
+            return next(self._iter)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+class _SearchIndexCollection:
+    def __init__(
+        self,
+        existing: list[dict[str, Any]],
+        *,
+        drop_error: OperationFailure | None = None,
+        create_error: OperationFailure | None = None,
+    ) -> None:
+        self.existing = existing
+        self.drop_error = drop_error
+        self.create_error = create_error
+        self.dropped: list[str] = []
+        self.created: list[Any] = []
+
+    async def create_index(self, _key: Any, **_kwargs: Any) -> str:
+        return "ok"
+
+    async def list_search_indexes(self) -> _SearchIndexCursor:
+        return _SearchIndexCursor(self.existing)
+
+    async def drop_search_index(self, name: str) -> None:
+        self.dropped.append(name)
+        if self.drop_error is not None:
+            raise self.drop_error
+
+    async def create_search_index(self, model: Any) -> str:
+        self.created.append(model)
+        if self.create_error is not None:
+            raise self.create_error
+        return str(model.document.get("name", "idx"))
+
+
+def _install_search_collection(
+    monkeypatch: pytest.MonkeyPatch, collection: _SearchIndexCollection
+) -> None:
+    monkeypatch.setattr(
+        PdfEmbeddingRecord,
+        "get_pymongo_collection",
+        staticmethod(lambda: collection),
+    )
+
+
+def test_ensure_indexes_ignores_concurrent_drop_of_missing_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector = vector_index_definition()
+    text = text_index_definition()
+    collection = _SearchIndexCollection(
+        [
+            {
+                "name": vector["name"],
+                "status": "READY",
+                "latestDefinition": vector["definition"],
+            },
+            {
+                "name": text["name"],
+                "status": "READY",
+                "latestDefinition": {"mappings": {"dynamic": True}},
+            },
+        ],
+        drop_error=OperationFailure(
+            "Index pdf_pipeline_text_index not found in fao_impact_monitor.embeddings",
+            27,
+        ),
+    )
+    _install_search_collection(monkeypatch, collection)
+
+    asyncio.run(ensure_pdf_pipeline_indexes())
+
+    assert collection.dropped == [text["name"]]
+    assert len(collection.created) == 1
+    assert collection.created[0].document["name"] == text["name"]
+
+
+def test_ensure_indexes_ignores_create_when_peer_already_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection = _SearchIndexCollection(
+        [],
+        create_error=OperationFailure("Index already exists with that name", 68),
+    )
+    _install_search_collection(monkeypatch, collection)
+
+    asyncio.run(ensure_pdf_pipeline_indexes())
+
+    assert collection.dropped == []
+    assert [model.document["name"] for model in collection.created] == [
+        vector_index_definition()["name"],
+        text_index_definition()["name"],
+    ]
+
+
+def test_ensure_indexes_leaves_in_progress_index_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector = vector_index_definition()
+    text = text_index_definition()
+    collection = _SearchIndexCollection(
+        [
+            {
+                "name": vector["name"],
+                "status": "PENDING",
+                "latestDefinition": {},
+            },
+            {
+                "name": text["name"],
+                "status": "READY",
+                "latestDefinition": text["definition"],
+            },
+        ]
+    )
+    _install_search_collection(monkeypatch, collection)
+
+    asyncio.run(ensure_pdf_pipeline_indexes())
+
+    assert collection.dropped == []
+    assert collection.created == []
+
+
+def test_ensure_indexes_skips_ready_index_when_atlas_adds_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector = vector_index_definition()
+    text = text_index_definition()
+    vector_actual = {
+        "fields": [
+            {**vector["definition"]["fields"][0], "hnswOptions": {"maxEdges": 16}},
+            *vector["definition"]["fields"][1:],
+        ]
+    }
+    collection = _SearchIndexCollection(
+        [
+            {
+                "name": vector["name"],
+                "status": "READY",
+                "latestDefinition": vector_actual,
+            },
+            {
+                "name": text["name"],
+                "status": "READY",
+                "latestDefinition": text["definition"],
+            },
+        ]
+    )
+    _install_search_collection(monkeypatch, collection)
+
+    asyncio.run(ensure_pdf_pipeline_indexes())
+
+    assert collection.dropped == []
+    assert collection.created == []
+
+
+def test_ensure_indexes_recreate_drops_compatible_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vector = vector_index_definition()
+    text = text_index_definition()
+    collection = _SearchIndexCollection(
+        [
+            {
+                "name": vector["name"],
+                "status": "READY",
+                "latestDefinition": vector["definition"],
+            },
+            {
+                "name": text["name"],
+                "status": "READY",
+                "latestDefinition": text["definition"],
+            },
+        ]
+    )
+    _install_search_collection(monkeypatch, collection)
+
+    asyncio.run(ensure_pdf_pipeline_indexes(recreate=True))
+
+    assert collection.dropped == [vector["name"], text["name"]]
+    assert [model.document["name"] for model in collection.created] == [
+        vector["name"],
+        text["name"],
+    ]

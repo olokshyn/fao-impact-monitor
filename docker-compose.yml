@@ -16,6 +16,10 @@ services:
     environment:
       - MONGODB_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
       - MONGODB_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+    # mongot listens on 127.0.0.1:27027. Without this, the image healthcheck
+    # pings [::1]:27027, connection-refuses, and the runner kills mongod.
+    extra_hosts:
+      - "localhost:127.0.0.1"
     volumes:
       - mongo_db:/data/db
       - mongo_configdb:/data/configdb

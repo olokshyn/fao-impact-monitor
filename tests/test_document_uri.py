@@ -1,9 +1,18 @@
 from pathlib import Path
 
 from fao_impact_monitor.utils.document_uri import (
+    ascii_relative_path,
     file_document_uri,
     markdown_document_target,
 )
+
+
+def test_ascii_relative_path_folds_nino_and_unicode_dashes() -> None:
+    assert ascii_relative_path("El Niño") == "El Nino"
+    assert (
+        ascii_relative_path("fao_data/Haiti \u2012 El Nin\u0303o Response Plan.pdf")
+        == "fao_data/Haiti - El Nino Response Plan.pdf"
+    )
 
 
 def test_relative_pdf_path_has_file_scheme_and_is_url_encoded() -> None:

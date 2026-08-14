@@ -1,7 +1,37 @@
 """Local document URI helpers for storage and Markdown output."""
 
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote, unquote
+
+_ASCII_PUNCTUATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+    }
+)
+
+
+def ascii_relative_path(path: str) -> str:
+    """Fold a relative path to ASCII (``ñ``→``n``, unicode dashes→``-``).
+
+    Generated report names and Preview Launch ``/F`` filespecs must be
+    MacRoman-encodable; ASCII is a safe subset.
+    """
+    text = unicodedata.normalize("NFKD", path).translate(_ASCII_PUNCTUATION)
+    text = "".join(
+        character for character in text if not unicodedata.combining(character)
+    )
+    return text.encode("ascii", "ignore").decode("ascii")
 
 
 def file_document_uri(path: Path) -> str:

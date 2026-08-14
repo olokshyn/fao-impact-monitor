@@ -38,8 +38,10 @@ from fao_impact_monitor.research_report import (
     is_worldbank_only,
     list_metric_report_files,
     markdown_to_pdf,
+    metric_human_report_path,
     metric_path,
     metric_report_path,
+    missing_researcher_process_jobs,
     parse_countries_iso3,
     report_pdf_filename,
     select_metrics,
@@ -170,14 +172,77 @@ def test_build_metric_process_jobs_el_nino() -> None:
     assert jobs[0].kind == "worldbank"
     assert jobs[0].metric_indices == [1, 2]
     assert jobs[1].kind == "faostat"
+    assert jobs[1].metric_indices == list(range(3, 14))
     assert jobs[1].data_source == "FAOSTAT"
     assert jobs[2].kind == "emdat"
+    assert jobs[2].metric_indices == [26, 27, 28, 29]
     assert jobs[2].data_source == "EMDAT"
     researcher_jobs = jobs[3:]
     assert len(researcher_jobs) == 12
-    assert [job.metric_indices[0] for job in researcher_jobs] == list(range(3, 15))
+    assert [job.metric_indices[0] for job in researcher_jobs] == list(range(14, 26))
     assert all(job.kind == "researcher" for job in researcher_jobs)
     assert all(job.data_source is None for job in researcher_jobs)
+
+
+def test_missing_researcher_process_jobs_skips_structured_and_written(
+    tmp_path: Path,
+) -> None:
+    metrics = [
+        _metric(
+            name="WB",
+            sources=[
+                DataSourceConfig.model_validate(
+                    {
+                        "source": "WorldBank",
+                        "indicator": "NV.AGR.TOTL.ZS",
+                        "exclusive": True,
+                    }
+                )
+            ],
+        ),
+        _metric(
+            name="Text A",
+            sources=[
+                DataSourceConfig.model_validate(
+                    {"source": "FAORepository", "root_url": "https://x"}
+                )
+            ],
+        ),
+        _metric(
+            name="Text B",
+            sources=[
+                DataSourceConfig.model_validate(
+                    {"source": "FAORepository", "root_url": "https://y"}
+                )
+            ],
+        ),
+        _metric(
+            name="FAO",
+            sources=[DataSourceConfig(source="FAOSTAT", exclusive=True)],
+        ),
+        _metric(
+            name="EM",
+            sources=[
+                DataSourceConfig.model_validate(
+                    {"source": "EMDAT", "indicator": "Total Deaths", "exclusive": True}
+                )
+            ],
+        ),
+    ]
+    output_dir = tmp_path / "ETH"
+    output_dir.mkdir()
+    (output_dir / "0001.md").write_text("worldbank\n", encoding="utf-8")
+    (output_dir / "0002.md").write_text("text A\n", encoding="utf-8")
+    (output_dir / "0003.md").write_text("", encoding="utf-8")
+
+    jobs = missing_researcher_process_jobs(metrics, output_dir)
+    assert [(job.kind, job.metric_indices) for job in jobs] == [("researcher", [3])]
+
+    missing_dir = tmp_path / "KEN"
+    assert [
+        job.metric_indices[0]
+        for job in missing_researcher_process_jobs(metrics, missing_dir)
+    ] == [2, 3]
 
 
 def test_format_worldbank_result_plot_and_indicator_ref(tmp_path: Path) -> None:
@@ -199,10 +264,15 @@ def test_format_worldbank_result_plot_and_indicator_ref(tmp_path: Path) -> None:
         plot_stem="gdp",
     )
     assert "![Agriculture, forestry" in body
-    assert "# Direct evidence" in body
-    assert "| Year | Value | Unit |" in body
-    assert "| 2022 | 21.1 | % |" in body
-    assert "# Indirect evidence\n\nNone." in body
+    assert "## Direct evidence" in body
+    assert "Source data:" not in body
+    assert "| Year | Value | Unit |" not in body
+    assert "## Indirect evidence\n\nNone." in body
+    assert "Latest value: 20.5 % (2023)" in body
+    assert (
+        "Source url: https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS?locations=KE"
+        in body
+    )
     assert (tmp_path / "plots" / "gdp-worldbank-1.png").is_file()
     assert "NV.AGR.TOTL.ZS" in refs[0]
     assert "https://data.worldbank.org/indicator/NV.AGR.TOTL.ZS?locations=KE" in refs[0]
@@ -235,9 +305,9 @@ def test_format_faostat_result_plot_and_reference(tmp_path: Path) -> None:
     )
 
     assert "![Crop and livestock products — National]" in body
-    assert "| Year | Item | Element | Qualifier | Unit | Value raw | Value |" in body
+    assert "Source data:" not in body
     assert (
-        "| 2022 | Maize (corn) | Production | National | t | <0.1 | 4200000 |" in body
+        "| Year | Item | Element | Qualifier | Unit | Value raw | Value |" not in body
     )
     assert (tmp_path / "plots" / "production-faostat-1.png").is_file()
     assert "FAOSTAT" in refs[0]
@@ -290,7 +360,7 @@ def test_metric_report_path_and_defaults() -> None:
         "reports/custom/KEN"
     )
     assert default_research_pdf_path("ken") == Path(
-        "reports/el-nino/KEN/El Niño - KEN.pdf"
+        "reports/el-nino/KEN/KEN metrics El Nino.pdf"
     )
 
 
@@ -299,14 +369,20 @@ def test_report_pdf_filename_uses_use_case_template(tmp_path: Path) -> None:
     use_case.write_text(
         (
             '{"name": "El Niño", '
-            '"report_pdf_template": "{name} - {country}.pdf", '
+            '"report_pdf_template": "{country} metrics {name}.pdf", '
             '"metrics": []}'
         ),
         encoding="utf-8",
     )
-    assert report_pdf_filename("eth", use_case=use_case) == "El Niño - ETH.pdf"
+    assert report_pdf_filename("eth", use_case=use_case) == ("ETH metrics El Nino.pdf")
+    assert report_pdf_filename("fji", use_case=use_case, human=True) == (
+        "FJI metrics El Nino - human.pdf"
+    )
     assert default_research_pdf_path("eth", use_case=use_case) == (
-        Path("reports/drought/ETH/El Niño - ETH.pdf")
+        Path("reports/drought/ETH/ETH metrics El Nino.pdf")
+    )
+    assert default_research_pdf_path("fji", use_case=use_case, human=True) == (
+        Path("reports/drought/FJI/FJI metrics El Nino - human.pdf")
     )
 
 
@@ -322,15 +398,15 @@ def test_combine_metric_reports_adds_title_and_keeps_metric_files_intact(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "0001.md").write_text(
-        "# Metric info\nSeq Number: 1\nName: First\n\n"
-        "# Direct evidence\n\nNone.\n\n"
-        "# References\n\n1. [A](https://a.example)\n",
+        "## Metric info\nSeq Number: 1\nName: First\n\n"
+        "## Direct evidence\n\nNone.\n\n"
+        "## References\n\n1. [A](https://a.example)\n",
         encoding="utf-8",
     )
     (tmp_path / "0003.md").write_text(
-        "# Metric info\nSeq Number: 3\nName: Third\n\n"
-        "# Direct evidence\n\nNone.\n\n"
-        "# References\n\n1. [B](https://b.example)\n",
+        "## Metric info\nSeq Number: 3\nName: Third\n\n"
+        "## Direct evidence\n\nNone.\n\n"
+        "## References\n\n1. [B](https://b.example)\n",
         encoding="utf-8",
     )
     (tmp_path / "notes.txt").write_text("ignore", encoding="utf-8")
@@ -338,9 +414,9 @@ def test_combine_metric_reports_adds_title_and_keeps_metric_files_intact(
     assert [p.name for p in files] == ["0001.md", "0003.md"]
     combined = combine_metric_reports(files, title="El Nino research - KEN")
     assert combined.startswith("# El Nino research - KEN\n")
-    assert combined.count("# Metric info") == 2
+    assert combined.count("## Metric info") == 2
     assert combined.index("Seq Number: 1") < combined.index("Seq Number: 3")
-    assert combined.count("# References") == 2
+    assert combined.count("## References") == 2
     assert "1. [A](https://a.example)" in combined
     assert "1. [B](https://b.example)" in combined
 
@@ -350,11 +426,11 @@ def test_combine_metric_reports_orders_by_section_number(
 ) -> None:
     # Write higher number first; combine must still emit sequence 1 before 2.
     (tmp_path / "0002.md").write_text(
-        "# Metric info\nSeq Number: 2\nName: Second\n",
+        "## Metric info\nSeq Number: 2\nName: Second\n",
         encoding="utf-8",
     )
     (tmp_path / "0001.md").write_text(
-        "# Metric info\nSeq Number: 1\nName: First\n",
+        "## Metric info\nSeq Number: 1\nName: First\n",
         encoding="utf-8",
     )
     # Pass files in reverse numeric order on purpose.
@@ -372,6 +448,68 @@ def test_combine_metric_reports_recovers_missing_section_heading(
     combined = combine_metric_reports([tmp_path / "0004.md"])
     assert "## 4. Metric 4" in combined
     assert "Body without a heading" in combined
+
+
+def test_metric_human_report_path_uses_h_suffix(tmp_path: Path) -> None:
+    assert metric_human_report_path(tmp_path, 15) == tmp_path / "0015-H.md"
+
+
+def test_list_metric_report_files_human_prefers_h_twin(tmp_path: Path) -> None:
+    (tmp_path / "0001.md").write_text("# 1. Text metric\n\nmachine\n", encoding="utf-8")
+    (tmp_path / "0001-H.md").write_text("# 1. Text metric\n\nhuman\n", encoding="utf-8")
+    (tmp_path / "0002.md").write_text("# World Bank\n\nplot\n", encoding="utf-8")
+    listed = list_metric_report_files(tmp_path, human=True)
+    assert listed == [tmp_path / "0001-H.md", tmp_path / "0002.md"]
+
+
+def test_combine_metric_reports_keeps_numbered_h1(tmp_path: Path) -> None:
+    first = tmp_path / "0001-H.md"
+    first.write_text("# 1. Crop yield loss\n\n**Description:** x\n", encoding="utf-8")
+    combined = combine_metric_reports([first])
+    assert "# 1. Crop yield loss" in combined
+    assert combined.index("# 1. Crop yield loss") > combined.index("# Research report")
+
+
+def test_combine_metric_reports_human_rewrites_worldbank_layout(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "0001.md").write_text(
+        "## Metric info\n\n"
+        "Seq Number: 1\n\n"
+        "Name: Agriculture share of GDP\n\n"
+        "Description: The share of agriculture in GDP.\n\n"
+        "Example: Agriculture contributed 24.3% of GDP in 2023.\n\n"
+        "Unit: %\n\n"
+        "## Direct evidence\n\n"
+        "### Direct Evidence 1\n\n"
+        "Source: Agriculture value added\n\n"
+        "Indicator: NV.AGR.TOTL.ZS\n\n"
+        "Latest value: 14 % (2025)\n\n"
+        "Plot: ![Agriculture value added](plots/0001-worldbank-1.png)\n\n"
+        "## Indirect evidence\n\nNone.\n\n"
+        "## References\n\n"
+        "1. [Agriculture value added](https://data.worldbank.org/indicator/X)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002.md").write_text(
+        "## Metric info\nSeq Number: 2\nName: Pastureland\n\n"
+        "## Queries\n\n1. [vectorstore] query\n",
+        encoding="utf-8",
+    )
+    combined = combine_metric_reports(
+        [tmp_path / "0001.md", tmp_path / "0002.md"],
+        human=True,
+    )
+    assert "# 1. Agriculture share of GDP" in combined
+    assert "Description: The share of agriculture in GDP." in combined
+    assert "Example: Agriculture contributed 24.3% of GDP in 2023." in combined
+    assert "## Plots" in combined
+    assert "![Agriculture value added](plots/0001-worldbank-1.png)" in combined
+    assert "Seq Number: 1" not in combined
+    assert "Latest value:" not in combined
+    assert "Unit: %" not in combined
+    assert "Seq Number: 2" in combined
+    assert "## Queries" in combined
 
 
 def test_build_research_pdf_writes_pdf(tmp_path: Path) -> None:
@@ -394,13 +532,13 @@ def test_build_research_pdf_writes_pdf(tmp_path: Path) -> None:
         plot_stem="gdp",
     )
     (reports / "0002.md").write_text(
-        "# Metric info\nSeq Number: 2\nName: Pastureland\n\n"
-        "# Direct evidence\n\nNone.\n\n# References\n\nNone.\n",
+        "## Metric info\nSeq Number: 2\nName: Pastureland\n\n"
+        "## Direct evidence\n\nNone.\n\n## References\n\nNone.\n",
         encoding="utf-8",
     )
     (reports / "0001.md").write_text(
-        "# Metric info\nSeq Number: 1\nName: Cropland\n\n"
-        f"{formatted}\n\n# References\n\nNone.\n",
+        "## Metric info\nSeq Number: 1\nName: Cropland\n\n"
+        f"{formatted}\n\n## References\n\nNone.\n",
         encoding="utf-8",
     )
     output = tmp_path / "el-nino-KEN.pdf"
@@ -487,8 +625,8 @@ def test_build_research_pdf_makes_local_links_clickable(tmp_path: Path) -> None:
     local_pdf = fao_data / "My Doc.pdf"
     local_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
     (reports / "0001.md").write_text(
-        "# Metric info\nSeq Number: 1\nName: Metric\n\n"
-        "# References\n\n1. [local](fao_data/My%20Doc.pdf)\n"
+        "## Metric info\nSeq Number: 1\nName: Metric\n\n"
+        "## References\n\n1. [local](fao_data/My%20Doc.pdf)\n"
         "2. [web](https://example.com/a).\n",
         encoding="utf-8",
     )
@@ -508,6 +646,38 @@ def test_build_research_pdf_makes_local_links_clickable(tmp_path: Path) -> None:
     assert not any(str(uri).startswith("file:") for uri in uris)
     assert b"/GoToR" not in output.read_bytes()
     assert str(local_pdf.resolve()).encode() not in output.read_bytes()
+
+
+def test_build_research_pdf_ascii_folds_non_ascii_local_pdf_names(
+    tmp_path: Path,
+) -> None:
+    from urllib.parse import quote, unquote
+
+    import pymupdf
+
+    reports = tmp_path / "reports"
+    fao_data = reports / "fao_data"
+    fao_data.mkdir(parents=True)
+    original = "Haiti \u2012 El Nin\u0303o Response Plan.pdf"
+    local_pdf = fao_data / original
+    local_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    href = quote(f"fao_data/{original}", safe="/")
+    (reports / "0001.md").write_text(
+        "## Metric info\nSeq Number: 1\nName: Metric\n\n"
+        f"## References\n\n1. [local]({href})\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "out.pdf"
+    build_research_pdf(input_dir=reports, output_path=output)
+
+    document = pymupdf.open(output)  # type: ignore[no-untyped-call]
+    files = {
+        unquote(str(link.get("file")))
+        for page in cast(Any, document)
+        for link in page.get_links()
+        if link.get("file")
+    }
+    assert "fao_data/Haiti - El Nino Response Plan.pdf" in files
 
 
 def test_format_researcher_result_has_parseable_evidence_and_numbered_citations() -> (
@@ -605,8 +775,8 @@ def test_format_researcher_result_has_parseable_evidence_and_numbered_citations(
         research_iterations=1,
     )
     body, refs = format_researcher_result(output)
-    assert body.startswith("# Direct evidence")
-    assert "## Direct Evidence 1" in body
+    assert body.startswith("## Direct evidence")
+    assert "### Direct Evidence 1" in body
     assert "Evidence id: evidence-001" in body
     assert (
         "Events: el_nino_2015_16, associated\n\n"
@@ -627,10 +797,12 @@ def test_format_researcher_result_has_parseable_evidence_and_numbered_citations(
     )
     assert body.index("Source text:") < body.index("Verified visual facts:")
     assert body.index("Source physical pages: 3, 4") < body.index("Source text:")
-    assert "## Indirect Evidence 1" in body
-    assert "## Indirect Evidence 2" not in body
+    assert "Source url: https://fao.org/doc.pdf" in body
+    assert "### Indirect Evidence 1" in body
+    assert "### Indirect Evidence 2" not in body
     assert "Source: https://example.org/drought" in body
-    answer = body.split("# Answer\n\n", maxsplit=1)[1]
+    assert "Source title: Drought update" in body
+    answer = body.split("## Answer\n\n", maxsplit=1)[1]
     assert answer == "Cropland affected by drought reached 35%. [1]"
     assert "](https://" not in answer
     assert refs == [
@@ -709,8 +881,8 @@ def test_format_researcher_result_cannot_answer() -> None:
         research_iterations=1,
     )
     body, _refs = format_researcher_result(output)
-    assert "# Direct evidence\n\nNone." in body
-    assert "# Indirect evidence\n\nNone." in body
+    assert "## Direct evidence\n\nNone." in body
+    assert "## Indirect evidence\n\nNone." in body
     assert "cannot answer this metric quantitatively for Kenya" in body
 
 
@@ -774,7 +946,7 @@ def test_format_metric_section_and_report() -> None:
         queries_markdown=queries,
     )
     assert section.startswith(
-        "# Metric info\n\n"
+        "## Metric info\n\n"
         "Seq Number: 1\n\n"
         "Name: Pastureland\n\n"
         "Description: Desc\n\n"
@@ -787,10 +959,10 @@ def test_format_metric_section_and_report() -> None:
     assert "Example: Example text" in section
     assert "Unit: %" in section
     assert "Some answer." in section
-    assert "# References\n\n1. [Doc, p. 1](https://example.org/a.pdf)" in section
-    assert section.index("# Metric info") < section.index("Some answer.")
-    assert section.index("Some answer.") < section.index("# References")
-    assert section.index("# References") < section.index("# Queries")
+    assert "## References\n\n1. [Doc, p. 1](https://example.org/a.pdf)" in section
+    assert section.index("## Metric info") < section.index("Some answer.")
+    assert section.index("Some answer.") < section.index("## References")
+    assert section.index("## References") < section.index("## Queries")
     assert (
         "1. [vectorstore] Kenya El Nino cropland percentage — returned: 12, accepted: 3"
     ) in section
@@ -811,7 +983,7 @@ def test_format_metric_section_and_report() -> None:
 
 
 def test_format_queries_section_empty() -> None:
-    assert format_queries_section([]) == "# Queries\n\nNone."
+    assert format_queries_section([]) == "## Queries\n\nNone."
 
 
 def test_el_nino_routing_matches_plan() -> None:
@@ -820,6 +992,9 @@ def test_el_nino_routing_matches_plan() -> None:
         index
         for index, metric in enumerate(metrics)
         if metric.name == "Irrigated cropland"
+    )
+    cropland_index = next(
+        index for index, metric in enumerate(metrics) if metric.name == "Cropland"
     )
     emdat_index = next(
         index
@@ -830,10 +1005,11 @@ def test_el_nino_routing_matches_plan() -> None:
     assert metric_path(metrics[0]) == "worldbank"
     assert metric_path(metrics[1]) == "worldbank"
     assert all(
-        metric_path(metric) == "researcher" for metric in metrics[2:irrigated_index]
+        metric_path(metric) == "faostat"
+        for metric in metrics[irrigated_index:cropland_index]
     )
     assert all(
-        metric_path(metric) == "faostat"
-        for metric in metrics[irrigated_index:emdat_index]
+        metric_path(metric) == "researcher"
+        for metric in metrics[cropland_index:emdat_index]
     )
     assert all(metric_path(metric) == "emdat" for metric in metrics[emdat_index:])

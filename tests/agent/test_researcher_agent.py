@@ -19,9 +19,11 @@ from fao_impact_monitor.agent.researcher_agent import (
     ClaimUsefulnessList,
     ClaimUsefulnessVerdict,
     EvidenceClaim,
+    EvidenceGap,
     ExtractedClaimCandidate,
     ExtractedClaimList,
     PdfVerifiedVisualFact,
+    ResearcherOutput,
     ResearchState,
     RetrievedChunk,
     StatementCitation,
@@ -42,6 +44,7 @@ from fao_impact_monitor.agent.researcher_agent import (
     build_final_summary,
     chunk_from_hit,
     classify_researcher_status,
+    format_human_markdown,
     is_direct_evidence_claim,
     match_quoted_text,
     normalize_for_quote_match,
@@ -323,6 +326,45 @@ def test_final_summary_citations_use_document_uri_and_page() -> None:
     summary = build_final_summary([statement])
     assert "Kenya Maize Report, p. 4" in summary
     assert "https://fao.org/kenya-maize.pdf" in summary
+
+
+def test_format_human_markdown_uses_validated_statements() -> None:
+    output = ResearcherOutput(
+        status="answered",
+        country="Kenya",
+        metric_name="Maize production change after drought",
+        final_summary="unused",
+        statements=[
+            AnswerStatement(
+                statement_id="stmt_001",
+                text="Maize production fell by 12%.",
+                supporting_claim_ids=["claim_001"],
+                citations=[
+                    StatementCitation(
+                        document_name="Kenya Maize Report",
+                        document_uri="https://fao.org/kenya-maize.pdf",
+                        page_number=4,
+                    )
+                ],
+            )
+        ],
+        open_gaps=[
+            EvidenceGap(
+                gap_id="gap_001",
+                description="No livestock losses found.",
+                why_required="Needed for completeness.",
+            )
+        ],
+        research_iterations=1,
+    )
+    markdown = format_human_markdown(output, metric=_metric(), section_number=16)
+    assert markdown.startswith("# 16. Maize production change after drought")
+    assert "**Description:**" in markdown
+    assert "## Context" in markdown
+    assert "## Answer" in markdown
+    assert "## Gaps" in markdown
+    assert "([Kenya Maize Report, p. 4](https://fao.org/kenya-maize.pdf))" in markdown
+    assert "No livestock losses found." in markdown
 
 
 def test_vector_claim_uses_filtered_country_scope_not_quote_text() -> None:

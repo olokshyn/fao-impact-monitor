@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -35,7 +34,10 @@ from fao_impact_monitor.data_source.world_bank import (
     world_bank_indicator_url,
 )
 from fao_impact_monitor.metric.metric import Metric
-from fao_impact_monitor.utils.document_uri import markdown_document_target
+from fao_impact_monitor.utils.document_uri import (
+    ascii_relative_path,
+    markdown_document_target,
+)
 
 MetricPath = Literal["worldbank", "faostat", "emdat", "researcher"]
 
@@ -43,8 +45,13 @@ _STRUCTURED_DATA_SOURCES = {"FAOSTAT", "WorldBank", "EMDAT"}
 
 _METRIC_REPORT_FILENAME = re.compile(r"^\d{4}\.md$")
 _SECTION_HEADING = re.compile(r"^##\s+(\d+)\.\s+(.*\S)\s*$")
+_NUMBERED_H1_HEADING = re.compile(r"^#\s+(\d+)\.\s+(.*\S)\s*$")
 _SEQ_NUMBER = re.compile(r"^Seq Number:\s*(\d+)\s*$")
-_METRIC_INFO_HEADING = "# Metric info"
+_METRIC_INFO_HEADING = "## Metric info"
+_METRIC_INFO_FIELD = re.compile(r"^(Seq Number|Name|Description|Example|Unit):\s*(.*)$")
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_QUERIES_HEADING = "## Queries"
+_REFERENCES_HEADING = "## References"
 _HTML_HREF = re.compile(r'href="([^"]+)"')
 _HTML_TABLE = re.compile(r"<table>.*?</table>", re.DOTALL)
 _HTML_TABLE_ROW = re.compile(r"<tr(?:\s[^>]*)?>(.*?)</tr>", re.DOTALL)
@@ -52,7 +59,7 @@ _HTML_TABLE_HEADER = re.compile(r"<th(?:\s[^>]*)?>(.*?)</th>", re.DOTALL)
 _HTML_TABLE_CELL = re.compile(r"<td(?:\s[^>]*)?>(.*?)</td>", re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
 _DEFAULT_USE_CASE = Path("use-cases/el-nino.json")
-_DEFAULT_REPORT_PDF_TEMPLATE = "{name} - {country}.pdf"
+_DEFAULT_REPORT_PDF_TEMPLATE = "{country} metrics {name}.pdf"
 
 _PDF_HTML_STYLE = """
 @page {
@@ -105,6 +112,11 @@ def metric_report_path(output_dir: Path, metric_index: int) -> Path:
     return output_dir / f"{metric_index:04d}.md"
 
 
+def metric_human_report_path(output_dir: Path, metric_index: int) -> Path:
+    """Human-readable twin: ``<output_dir>/{metric_index:04d}-H.md``."""
+    return output_dir / f"{metric_index:04d}-H.md"
+
+
 def default_research_dir(
     country_iso3: str,
     *,
@@ -125,46 +137,63 @@ def resolve_use_case_path(use_case: Path | str) -> Path:
     return path
 
 
+def use_case_display_name(use_case: Path | str = _DEFAULT_USE_CASE) -> str:
+    """Return the use-case ``name`` field, falling back to the file stem."""
+    use_case_path = resolve_use_case_path(use_case)
+    try:
+        payload = json.loads(use_case_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return use_case_path.stem
+    if isinstance(payload, dict):
+        raw_name = payload.get("name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            return raw_name.strip()
+    return use_case_path.stem
+
+
 def report_pdf_filename(
     country_iso3: str,
     *,
     use_case: Path | str = _DEFAULT_USE_CASE,
+    human: bool = False,
 ) -> str:
-    """Build the combined report PDF filename from the use-case template.
+    """Build the combined metrics PDF filename from the use-case template.
 
     The use-case may define ``report_pdf_template`` with ``{name}`` and
-    ``{country}`` placeholders (default: ``"{name} - {country}.pdf"``).
+    ``{country}`` placeholders (default: ``"{country} metrics {name}.pdf"``).
+    With ``human=True``, `` - human`` is inserted before the extension
+    (e.g. ``FJI metrics El Nino - human.pdf``).
     """
     use_case_path = resolve_use_case_path(use_case)
-    name = use_case_path.stem
+    name = use_case_display_name(use_case_path)
     template = _DEFAULT_REPORT_PDF_TEMPLATE
     try:
         payload = json.loads(use_case_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError):
         payload = {}
     if isinstance(payload, dict):
-        raw_name = payload.get("name")
-        if isinstance(raw_name, str) and raw_name.strip():
-            name = raw_name.strip()
         raw_template = payload.get("report_pdf_template")
         if isinstance(raw_template, str) and raw_template.strip():
             template = raw_template.strip()
     filename = template.format(name=name, country=country_iso3.upper())
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
-    return filename
+    if human:
+        filename = f"{Path(filename).stem} - human.pdf"
+    return ascii_relative_path(filename)
 
 
 def default_research_pdf_path(
     country_iso3: str,
     *,
     use_case: Path | str = _DEFAULT_USE_CASE,
+    human: bool = False,
 ) -> Path:
     """Default combined PDF path for a use case and country."""
     use_case_path = resolve_use_case_path(use_case)
     return default_research_dir(
         country_iso3, use_case=use_case_path
-    ) / report_pdf_filename(country_iso3, use_case=use_case_path)
+    ) / report_pdf_filename(country_iso3, use_case=use_case_path, human=human)
 
 
 def ensure_research_output_dir(output_dir: Path) -> Path:
@@ -179,8 +208,13 @@ def write_metric_report(report_path: Path, content: str) -> Path:
     return report_path
 
 
-def list_metric_report_files(directory: Path) -> list[Path]:
-    """Return ``NNNN.md`` metric report files sorted by numeric section order."""
+def list_metric_report_files(directory: Path, *, human: bool = False) -> list[Path]:
+    """Return metric report files sorted by numeric section order.
+
+    Machine files match ``NNNN.md``. With ``human=True``, each researcher
+    twin ``NNNN-H.md`` is used when present; structured World Bank / FAOSTAT /
+    EM-DAT reports stay on ``NNNN.md`` (so plots remain in the PDF).
+    """
     if not directory.is_dir():
         raise FileNotFoundError(f"Research report directory not found: {directory}")
     files = [
@@ -192,7 +226,14 @@ def list_metric_report_files(directory: Path) -> list[Path]:
         raise FileNotFoundError(
             f"No metric markdown files (NNNN.md) found in {directory}"
         )
-    return sorted(files, key=lambda path: int(path.stem))
+    files = sorted(files, key=lambda path: int(path.stem))
+    if not human:
+        return files
+    selected: list[Path] = []
+    for path in files:
+        human_path = metric_human_report_path(path.parent, int(path.stem))
+        selected.append(human_path if human_path.is_file() else path)
+    return selected
 
 
 def _parse_metric_section(path: Path) -> tuple[int, str, str]:
@@ -217,6 +258,11 @@ def _parse_metric_section(path: Path) -> tuple[int, str, str]:
     if sequence is not None:
         return sequence, f"Metric {sequence}", text
 
+    if lines:
+        h1_match = _NUMBERED_H1_HEADING.match(lines[0])
+        if h1_match is not None:
+            return int(h1_match.group(1)), lines[0], text
+
     body_start = 0
     if lines[0].startswith("# "):
         body_start = 1
@@ -235,7 +281,7 @@ def _parse_metric_section(path: Path) -> tuple[int, str, str]:
         (i for i, line in enumerate(body_lines) if _SECTION_HEADING.match(line)),
         None,
     )
-    file_number = int(path.stem)
+    file_number = int(path.stem.removesuffix("-H"))
     if heading_idx is None:
         # Recover a missing ## title from the filename number.
         heading = f"## {file_number}. Metric {file_number}"
@@ -258,15 +304,81 @@ def _parse_metric_section(path: Path) -> tuple[int, str, str]:
     return section_number, heading, body
 
 
+def _section_body_after(text: str, heading: str) -> str:
+    """Return the body of ``heading`` up to the next ``## `` section."""
+    lines = text.splitlines()
+    start = next(
+        (index for index, line in enumerate(lines) if line.strip() == heading),
+        None,
+    )
+    if start is None:
+        return ""
+    end = start + 1
+    while end < len(lines) and not (
+        lines[end].startswith("## ") and lines[end].strip() != heading
+    ):
+        end += 1
+    return "\n".join(lines[start + 1 : end]).strip()
+
+
+def _humanize_structured_metric_markdown(text: str, *, section_number: int) -> str:
+    """Rewrite World Bank / FAOSTAT Metric info into a short human layout.
+
+    Researcher ``NNNN-H.md`` files and researcher machine reports (which
+    include ``## Queries``) are left unchanged.
+    """
+    stripped = text.strip()
+    if not stripped.startswith(_METRIC_INFO_HEADING):
+        return text
+    if any(line.strip() == _QUERIES_HEADING for line in stripped.splitlines()):
+        return text
+    lines = stripped.splitlines()
+    fields: dict[str, str] = {}
+    index = 1
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("## ") and line.strip() != _METRIC_INFO_HEADING:
+            break
+        match = _METRIC_INFO_FIELD.match(line)
+        if match is not None:
+            fields[match.group(1)] = match.group(2).strip()
+        index += 1
+    images = _MARKDOWN_IMAGE.findall(stripped)
+    plots = "\n\n".join(images) if images else "None."
+    references = _section_body_after(stripped, _REFERENCES_HEADING) or "None."
+    name = fields.get("Name") or f"Metric {section_number}"
+    return "\n".join(
+        [
+            f"# {section_number}. {name}",
+            "",
+            f"Description: {fields.get('Description', '')}",
+            "",
+            f"Example: {fields.get('Example', '')}",
+            "",
+            "## Plots",
+            "",
+            plots,
+            "",
+            "## References",
+            "",
+            references,
+            "",
+        ]
+    )
+
+
 def combine_metric_reports(
     files: list[Path],
     *,
     title: str = "Research report",
+    human: bool = False,
 ) -> str:
     """Combine per-metric markdown files into one document.
 
     - Adds the combined-document title only here, never to metric files.
     - Orders new sections by ``Seq Number`` (legacy fallback: ``## N.``).
+    - With ``human=True``, World Bank / FAOSTAT Metric info becomes
+      ``# N. Title`` plus Description, Example, Plots, and References.
     - Keeps every metric file otherwise intact.
     """
     if not files:
@@ -278,6 +390,10 @@ def combine_metric_reports(
         if not text:
             continue
         section_number, _heading, body = _parse_metric_section(path)
+        if human:
+            body = _humanize_structured_metric_markdown(
+                body, section_number=section_number
+            )
         if body:
             parsed.append((section_number, body))
 
@@ -314,22 +430,17 @@ def _make_html_hrefs_clickable(html: str, base_dir: Path | None) -> str:
 def _launch_filespec(relative_path: str) -> DictionaryObject:
     """Build a relative Launch filespec that macOS Preview can open.
 
-    Preview interprets ``/F`` byte strings as MacRoman. NFC + MacRoman preserves
-    characters like ``ñ`` and ``’``; UTF-8 filespecs are mojibaked and break.
+    Preview interprets ``/F`` byte strings as MacRoman. ASCII-fold names like
+    ``El Niño`` and unicode dashes so the filespec is always Preview-safe.
     """
-    relative_nfc = unicodedata.normalize("NFC", relative_path)
-    try:
-        mac_roman = relative_nfc.encode("mac_roman")
-    except UnicodeEncodeError as exc:
-        raise ValueError(
-            f"Local PDF path is not MacRoman-encodable (Preview-safe): {relative_path!r}"
-        ) from exc
+    relative_ascii = ascii_relative_path(relative_path)
+    mac_roman = relative_ascii.encode("mac_roman")
     return DictionaryObject(
         {
             NameObject("/Type"): NameObject("/Filespec"),
             NameObject("/F"): ByteStringObject(mac_roman),
             NameObject("/UF"): ByteStringObject(
-                b"\xfe\xff" + relative_nfc.encode("utf-16-be")
+                b"\xfe\xff" + relative_ascii.encode("utf-16-be")
             ),
         }
     )
@@ -412,7 +523,11 @@ def markdown_to_pdf(
     sections: list[list[str]] = []
     current: list[str] | None = None
     for line in lines:
-        if line == _METRIC_INFO_HEADING or _SECTION_HEADING.match(line):
+        if (
+            line == _METRIC_INFO_HEADING
+            or _SECTION_HEADING.match(line)
+            or _NUMBERED_H1_HEADING.match(line)
+        ):
             if current is not None:
                 sections.append(current)
             current = [line]
@@ -588,10 +703,11 @@ def build_research_pdf(
     *,
     input_dir: Path,
     output_path: Path,
+    human: bool = False,
 ) -> Path:
     """Combine metric markdown under ``input_dir`` and write a PDF."""
-    files = list_metric_report_files(input_dir)
-    combined = combine_metric_reports(files, title=output_path.stem)
+    files = list_metric_report_files(input_dir, human=human)
+    combined = combine_metric_reports(files, title=output_path.stem, human=human)
     return markdown_to_pdf(combined, output_path, base_dir=input_dir)
 
 
@@ -708,6 +824,29 @@ def build_metric_process_jobs(metrics: list[Metric]) -> list[MetricProcessJob]:
     return jobs
 
 
+def metric_report_is_generated(report_path: Path) -> bool:
+    """True when a non-empty metric markdown file already exists."""
+    try:
+        return report_path.is_file() and report_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def missing_researcher_process_jobs(
+    metrics: list[Metric],
+    output_dir: Path,
+) -> list[MetricProcessJob]:
+    """One researcher job per text metric that does not yet have a report."""
+    jobs: list[MetricProcessJob] = []
+    for index, metric in select_metrics(metrics, None):
+        if metric_path(metric) != "researcher":
+            continue
+        if metric_report_is_generated(metric_report_path(output_dir, index)):
+            continue
+        jobs.append(MetricProcessJob(kind="researcher", metric_indices=[index]))
+    return jobs
+
+
 def format_structured_result(
     results: list[Any],
     *,
@@ -716,7 +855,7 @@ def format_structured_result(
 ) -> tuple[str, list[str]]:
     """Return parseable evidence blocks for structured data results."""
     if not results:
-        return ("# Direct evidence\n\nNone.\n\n# Indirect evidence\n\nNone.", [])
+        return ("## Direct evidence\n\nNone.\n\n## Indirect evidence\n\nNone.", [])
 
     sections: list[str] = []
     references: list[str] = []
@@ -744,13 +883,13 @@ def format_structured_result(
             url = getattr(result, "url", None) or ""
             section = f"Source: {title}"
             reference = f"[{title}]({url})" if url else str(title)
-        sections.append(f"## Direct Evidence {result_index}\n\n{section}")
+        sections.append(f"### Direct Evidence {result_index}\n\n{section}")
         if reference:
             references.append(reference)
     body = (
-        "# Direct evidence\n\n"
+        "## Direct evidence\n\n"
         + "\n\n".join(sections)
-        + "\n\n# Indirect evidence\n\nNone."
+        + "\n\n## Indirect evidence\n\nNone."
     )
     return body, references
 
@@ -767,6 +906,24 @@ def format_worldbank_result(
         plot_dir=plot_dir,
         plot_stem=plot_stem,
     )
+
+
+def _latest_value_line(data: pd.DataFrame, *, unit: str) -> str | None:
+    """Return a Latest value line for the last non-null year in a time series."""
+    if data.empty or "year" not in data.columns or "value" not in data.columns:
+        return None
+    ordered = data.dropna(subset=["value"]).sort_values("year")
+    if ordered.empty:
+        return None
+    row = ordered.iloc[-1]
+    year = int(row["year"])
+    value = row["value"]
+    if isinstance(value, float) and value.is_integer():
+        value_text = str(int(value))
+    else:
+        value_text = f"{value}"
+    unit_text = f" {unit}" if unit else ""
+    return f"Latest value: {value_text}{unit_text} ({year})"
 
 
 def _format_worldbank_evidence(
@@ -791,18 +948,15 @@ def _format_worldbank_evidence(
         output_path=plot_dir / f"{plot_stem}.png",
         default_unit=unit,
     )
-    table_data = result.data.copy()
-    if "unit" not in table_data:
-        table_data["unit"] = unit
-    table = _dataframe_markdown_table(
-        table_data,
-        columns=("year", "value", "unit"),
-    )
     section_parts = [
         f"Source: {title}",
         f"Indicator: {indicator}",
-        f"Source data:\n\n{table}",
     ]
+    if url:
+        section_parts.append(f"Source url: {url}")
+    latest = _latest_value_line(result.data, unit=unit)
+    if latest is not None:
+        section_parts.append(latest)
     if plot_path is not None:
         section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
     section = "\n\n".join(section_parts)
@@ -822,6 +976,7 @@ def _format_faostat_evidence(
 ) -> tuple[str, str]:
     indicator = str(result.metadata.get("indicator") or "")
     title = result.title or indicator or "FAOSTAT indicator"
+    unit = str(result.metadata.get("unit") or "")
     if "qualifier" in result.data:
         qualifiers = result.data["qualifier"].dropna().astype(str).unique()
         if len(qualifiers) == 1:
@@ -831,34 +986,21 @@ def _format_faostat_evidence(
         title=title,
         output_path=plot_dir / f"{plot_stem}.png",
         series_columns=("item", "element", "unit"),
-        default_unit=str(result.metadata.get("unit") or ""),
-    )
-    table = _dataframe_markdown_table(
-        result.data,
-        columns=(
-            "year",
-            "period",
-            "item",
-            "indicator",
-            "element",
-            "qualifier",
-            "observation_source",
-            "unit",
-            "value_raw",
-            "value",
-            "flag",
-            "note",
-        ),
+        default_unit=unit,
     )
     section_parts = [
         f"Source: {title}",
         f"Indicator: {indicator}",
-        f"Source data:\n\n{table}",
     ]
+    url = result.url or ""
+    if url:
+        section_parts.append(f"Source url: {url}")
+    latest = _latest_value_line(result.data, unit=unit)
+    if latest is not None:
+        section_parts.append(latest)
     if plot_path is not None:
         section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
     section = "\n\n".join(section_parts)
-    url = result.url or ""
     reference = (
         f"[{title}]({url}) (FAOSTAT `{indicator}`)" if url else f"FAOSTAT `{indicator}`"
     )
@@ -1017,7 +1159,7 @@ def format_researcher_result(
         reference_numbers=reference_numbers,
     )
     references = [_format_source_reference(source) for source in sources]
-    return f"{direct}\n\n{indirect}\n\n# Answer\n\n{answer}", references
+    return f"{direct}\n\n{indirect}\n\n## Answer\n\n{answer}", references
 
 
 def _validate_report_source(source: SourceReference) -> None:
@@ -1036,7 +1178,7 @@ def _format_evidence_section(
     kind: Literal["Direct", "Indirect"],
     sources: list[SourceReference],
 ) -> str:
-    heading = f"# {kind} evidence"
+    heading = f"## {kind} evidence"
     if not sources:
         return f"{heading}\n\nNone."
     blocks = [
@@ -1075,14 +1217,16 @@ def _format_evidence_block(
 ) -> str:
     # Blank lines between fields so Markdown renders each on its own line.
     # Source text is always last before verified visual facts.
-    lines = [f"## {kind} Evidence {index}"]
+    lines = [f"### {kind} Evidence {index}"]
     if source.source_type == "web":
         lines.extend(
             [
                 f"Source: {source.document_uri}",
-                _format_source_text(source.source_text or ""),
             ]
         )
+        if source.document_name and source.document_name != source.document_uri:
+            lines.append(f"Source title: {source.document_name}")
+        lines.append(_format_source_text(source.source_text or ""))
         return "\n\n".join(lines)
 
     events = "; ".join(
@@ -1092,6 +1236,7 @@ def _format_evidence_block(
         [
             f"Evidence id: {source.evidence_id}",
             f"Source: {source.document_name}",
+            f"Source url: {source.document_uri}",
             "Source physical pages: "
             + ", ".join(str(page) for page in source.physical_pages),
             "Source printed pages: " + (", ".join(source.printed_pages) or "None."),
@@ -1155,8 +1300,8 @@ def _format_source_reference(source: SourceReference) -> str:
 
 
 def format_queries_section(query_runs: list[QueryRunStat]) -> str:
-    """Render the trailing # Queries section for a researcher report."""
-    lines = ["# Queries", ""]
+    """Render the trailing ## Queries section for a researcher report."""
+    lines = ["## Queries", ""]
     if not query_runs:
         lines.append("None.")
         return "\n".join(lines)
@@ -1187,7 +1332,7 @@ def format_metric_section(
         else "None."
     )
     parts = [
-        "# Metric info",
+        "## Metric info",
         "",
         f"Seq Number: {section_number}",
         "",
@@ -1201,7 +1346,7 @@ def format_metric_section(
         "",
         result_markdown,
         "",
-        "# References",
+        "## References",
         "",
         refs,
         "",

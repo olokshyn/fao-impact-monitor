@@ -131,8 +131,11 @@ def test_run_research_writes_per_metric_files_in_parallel(
     assert (output_dir / "0001.md").is_file()
     assert (output_dir / "0002.md").is_file()
     assert (output_dir / "0003.md").is_file()
+    assert (output_dir / "0001-H.md").is_file()
+    assert (output_dir / "0002-H.md").is_file()
+    assert not (output_dir / "0003-H.md").is_file()
     assert "A" in (output_dir / "0001.md").read_text(encoding="utf-8")
-    assert "B" in (output_dir / "0002.md").read_text(encoding="utf-8")
+    assert "# 1. A" in (output_dir / "0001-H.md").read_text(encoding="utf-8")
     assert "C" in (output_dir / "0003.md").read_text(encoding="utf-8")
 
 
@@ -195,12 +198,13 @@ def test_run_research_loads_faostat_and_writes_plot(
     source.get_data.assert_awaited_once()
     report = (output_dir / "0001.md").read_text(encoding="utf-8")
     assert "![Crop and livestock products](plots/0001-faostat-1.png)" in report
-    assert "# Metric info" in report
+    assert "## Metric info" in report
     assert "# El Niño research - KEN" not in report
-    assert "# Direct evidence" in report
-    assert "| Year | Item | Element | Unit | Value |" in report
-    assert "# Answer" not in report
-    assert "# References" in report
+    assert "## Direct evidence" in report
+    assert "Source data:" not in report
+    assert "| Year | Item | Element | Unit | Value |" not in report
+    assert "## Answer" not in report
+    assert "## References" in report
     assert (output_dir / "plots" / "0001-faostat-1.png").is_file()
 
 
@@ -267,7 +271,7 @@ def test_run_research_loads_emdat_and_writes_table(
 
     source.get_data.assert_awaited_once()
     report = (output_dir / "0001.md").read_text(encoding="utf-8")
-    assert "# Metric info" in report
+    assert "## Metric info" in report
     assert "# El Niño research - KEN" not in report
     assert "Source: Total Deaths" in report
     assert (
@@ -275,8 +279,8 @@ def test_run_research_loads_emdat_and_writes_table(
     )
     assert "| 2023 | Flood | Nairobi | Nairobi | 178 | persons |" in report
     assert "![Total Deaths](plots/0001-emdat-1.png)" in report
-    assert "# Answer" not in report
-    assert "# References" in report
+    assert "## Answer" not in report
+    assert "## References" in report
 
 
 def test_run_research_filters_metrics_by_source(
@@ -448,6 +452,7 @@ def test_research_parallel_cli_submits_country_job_matrix(
     assert captured["countries_iso3"] == ["ETH", "KEN"]
     assert captured["use_case_path"] == use_case
     assert captured["output_root"] == tmp_path / "out"
+    assert captured["continue_incomplete"] is False
 
 
 def test_run_research_parallel_builds_payloads_and_submits(
@@ -493,6 +498,11 @@ def test_run_research_parallel_builds_payloads_and_submits(
         "fao_impact_monitor.pipeline.as_completed",
         lambda futures: list(futures),
     )
+    ensure_once = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._ensure_pdf_pipeline_indexes_once",
+        ensure_once,
+    )
 
     results = _run_research_parallel(
         use_case_path=use_case,
@@ -518,6 +528,233 @@ def test_run_research_parallel_builds_payloads_and_submits(
     )
     assert submitted[0]["data_source"] == "WorldBank"
     assert submitted[1]["data_source"] is None
+    ensure_once.assert_not_called()
+
+
+def test_run_research_parallel_ensures_indexes_when_flag_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENSURE_INDEXES", "true")
+    use_case = tmp_path / "case.json"
+    use_case.write_text("{}", encoding="utf-8")
+    future = MagicMock()
+    future.result.return_value = {
+        "country_iso3": "KEN",
+        "kind": "researcher",
+        "metric_indices": [3],
+        "ok": True,
+        "error": None,
+        "pid": 42,
+        "elapsed_seconds": 0.01,
+    }
+    executor = MagicMock()
+    executor.__enter__.return_value = executor
+    executor.__exit__.return_value = None
+    executor.submit.return_value = future
+    ensure_once = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ProcessPoolExecutor",
+        lambda *args, **kwargs: executor,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.as_completed",
+        lambda futures: list(futures),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._ensure_pdf_pipeline_indexes_once",
+        ensure_once,
+    )
+
+    _run_research_parallel(
+        use_case_path=use_case,
+        countries_iso3=["KEN"],
+        output_root=tmp_path / "reports",
+        jobs=[MetricProcessJob(kind="researcher", metric_indices=[3])],
+    )
+
+    ensure_once.assert_called_once_with()
+
+
+def _continue_metrics() -> list[Metric]:
+    return [
+        _metric("WB", worldbank=True),
+        _metric("Text A"),
+        _metric("Text B"),
+        Metric(
+            name="FAO",
+            description="Desc",
+            example="Example",
+            unit="t",
+            data_sources=[DataSourceConfig(source="FAOSTAT", exclusive=True)],
+        ),
+        Metric(
+            name="EM",
+            description="Desc",
+            example="Example",
+            unit="persons",
+            data_sources=[
+                DataSourceConfig.model_validate(
+                    {"source": "EMDAT", "indicator": "Total Deaths", "exclusive": True}
+                )
+            ],
+        ),
+    ]
+
+
+def test_research_parallel_cli_forwards_continue_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "case.json"
+    use_case.write_text("{}", encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def fake_run_parallel(**kwargs: Any) -> list[dict[str, Any]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(pipeline, "_run_research_parallel", fake_run_parallel)
+
+    result = CliRunner().invoke(
+        pipeline.app,
+        [
+            "research-parallel",
+            "--countries",
+            "eth",
+            "--use-case",
+            str(use_case),
+            "--continue",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["continue_incomplete"] is True
+    assert captured["countries_iso3"] == ["ETH"]
+
+
+def test_run_research_parallel_continue_spawns_only_missing_text_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "case.json"
+    use_case.write_text("{}", encoding="utf-8")
+    reports = tmp_path / "reports"
+    eth = reports / "case" / "ETH"
+    ken = reports / "case" / "KEN"
+    mwi = reports / "case" / "MWI"
+    eth.mkdir(parents=True)
+    ken.mkdir(parents=True)
+    mwi.mkdir(parents=True)
+    (eth / "0001.md").write_text("worldbank\n", encoding="utf-8")
+    (eth / "0002.md").write_text("text A\n", encoding="utf-8")
+    (eth / "0003.md").write_text("", encoding="utf-8")
+    (mwi / "0002.md").write_text("text A\n", encoding="utf-8")
+    (mwi / "0003.md").write_text("text B\n", encoding="utf-8")
+
+    submitted: list[dict[str, Any]] = []
+
+    def fake_submit(_fn: Any, payload: dict[str, Any]) -> MagicMock:
+        submitted.append(payload)
+        future = MagicMock()
+        future.result.return_value = {
+            "country_iso3": payload["country_iso3"],
+            "kind": payload["kind"],
+            "metric_indices": payload["metric_indices"],
+            "ok": True,
+            "error": None,
+            "pid": 42,
+            "elapsed_seconds": 0.01,
+        }
+        return future
+
+    executor = MagicMock()
+    executor.__enter__.return_value = executor
+    executor.__exit__.return_value = None
+    executor.submit.side_effect = fake_submit
+    executor_cls = MagicMock(return_value=executor)
+    ensure_once = AsyncMock()
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: _continue_metrics(),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ProcessPoolExecutor",
+        executor_cls,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.as_completed",
+        lambda futures: list(futures),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._ensure_pdf_pipeline_indexes_once",
+        ensure_once,
+    )
+
+    results = _run_research_parallel(
+        use_case_path=use_case,
+        countries_iso3=["ETH", "KEN", "MWI"],
+        output_root=reports,
+        continue_incomplete=True,
+    )
+
+    assert len(results) == 3
+    assert {
+        (item["country_iso3"], item["kind"], tuple(item["metric_indices"]))
+        for item in submitted
+    } == {
+        ("ETH", "researcher", (3,)),
+        ("KEN", "researcher", (2,)),
+        ("KEN", "researcher", (3,)),
+    }
+    assert all(item["kind"] == "researcher" for item in submitted)
+    assert all(item["data_source"] is None for item in submitted)
+    executor_cls.assert_called_once()
+    assert executor_cls.call_args.kwargs["max_workers"] == 3
+    ensure_once.assert_not_called()
+
+
+def test_run_research_parallel_continue_skips_when_all_text_metrics_exist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "case.json"
+    use_case.write_text("{}", encoding="utf-8")
+    eth = tmp_path / "reports" / "case" / "ETH"
+    eth.mkdir(parents=True)
+    (eth / "0002.md").write_text("text A\n", encoding="utf-8")
+    (eth / "0003.md").write_text("text B\n", encoding="utf-8")
+
+    executor_cls = MagicMock()
+    ensure_once = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: _continue_metrics(),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ProcessPoolExecutor",
+        executor_cls,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._ensure_pdf_pipeline_indexes_once",
+        ensure_once,
+    )
+
+    results = _run_research_parallel(
+        use_case_path=use_case,
+        countries_iso3=["ETH"],
+        output_root=tmp_path / "reports",
+        continue_incomplete=True,
+    )
+
+    assert results == []
+    executor_cls.assert_not_called()
+    ensure_once.assert_not_called()
 
 
 def test_research_process_worker_uses_pdf_vector_store_for_researcher(
@@ -545,6 +782,7 @@ def test_research_process_worker_uses_pdf_vector_store_for_researcher(
 
     assert result["ok"] is True
     assert captured["use_pdf_vector_store"] is True
+    assert captured["ensure_indexes"] is False
 
 
 def test_run_research_uses_pdf_vector_store_by_default(
@@ -611,8 +849,167 @@ def test_run_research_uses_pdf_vector_store_by_default(
 
     assert captured["vector_store"] is store
     assert captured["web_research_enabled"] is False
-    ensure_indexes.assert_awaited_once_with()
+    ensure_indexes.assert_not_awaited()
     client.close.assert_awaited_once_with()
+
+
+def test_run_research_skips_index_ensure_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENSURE_INDEXES", "true")
+    metric = _metric("PDF evidence metric")
+    ensure_indexes = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: [metric],
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.connect_pdf_pipeline",
+        AsyncMock(return_value=MagicMock(close=AsyncMock())),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ensure_pdf_pipeline_indexes",
+        ensure_indexes,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.PdfEvidenceVectorStore",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.research",
+        AsyncMock(
+            return_value=ResearcherOutput(
+                status="answered",
+                country="Kenya",
+                metric_name=metric.name,
+                final_summary="PDF result",
+                statements=[],
+                claims=[],
+                sources=[],
+                open_gaps=[],
+                research_iterations=1,
+            )
+        ),
+    )
+
+    asyncio.run(
+        _run_research(
+            use_case_path=tmp_path / "case.json",
+            country_iso3="KEN",
+            metric_indices=None,
+            output_dir=tmp_path / "reports",
+            max_parallel=1,
+            ensure_indexes=False,
+        )
+    )
+
+    ensure_indexes.assert_not_awaited()
+
+
+def test_run_research_ensures_indexes_when_flag_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENSURE_INDEXES", "true")
+    metric = _metric("PDF evidence metric")
+    ensure_indexes = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: [metric],
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.connect_pdf_pipeline",
+        AsyncMock(return_value=MagicMock(close=AsyncMock())),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ensure_pdf_pipeline_indexes",
+        ensure_indexes,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.PdfEvidenceVectorStore",
+        lambda: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.research",
+        AsyncMock(
+            return_value=ResearcherOutput(
+                status="answered",
+                country="Kenya",
+                metric_name=metric.name,
+                final_summary="PDF result",
+                statements=[],
+                claims=[],
+                sources=[],
+                open_gaps=[],
+                research_iterations=1,
+            )
+        ),
+    )
+
+    asyncio.run(
+        _run_research(
+            use_case_path=tmp_path / "case.json",
+            country_iso3="KEN",
+            metric_indices=None,
+            output_dir=tmp_path / "reports",
+            max_parallel=1,
+        )
+    )
+
+    ensure_indexes.assert_awaited_once_with()
+
+
+def test_run_research_parallel_skips_indexes_without_researcher_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "case.json"
+    use_case.write_text("{}", encoding="utf-8")
+    future = MagicMock()
+    future.result.return_value = {
+        "country_iso3": "KEN",
+        "kind": "worldbank",
+        "metric_indices": [1],
+        "ok": True,
+        "error": None,
+        "pid": 42,
+        "elapsed_seconds": 0.01,
+    }
+    executor = MagicMock()
+    executor.__enter__.return_value = executor
+    executor.__exit__.return_value = None
+    executor.submit.return_value = future
+    ensure_once = AsyncMock()
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.ProcessPoolExecutor",
+        lambda *args, **kwargs: executor,
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.as_completed",
+        lambda futures: list(futures),
+    )
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._ensure_pdf_pipeline_indexes_once",
+        ensure_once,
+    )
+
+    _run_research_parallel(
+        use_case_path=use_case,
+        countries_iso3=["KEN"],
+        output_root=tmp_path / "reports",
+        jobs=[
+            MetricProcessJob(
+                kind="worldbank", metric_indices=[1], data_source="WorldBank"
+            )
+        ],
+    )
+
+    ensure_once.assert_not_called()
 
 
 def test_pdf_research_discovers_all_use_cases_and_uses_separate_output_dirs(
@@ -694,6 +1091,135 @@ def test_pdf_research_cli_forwards_repeatable_metric_selection(
     assert captured["metric_indices"] == [3, 5]
     assert captured["web_research_enabled"] is False
     assert captured["output_root"] == Path("reports")
+
+
+def test_impact_report_cli_writes_markdown_and_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "el-nino.json"
+    use_case.write_text(
+        '{"name": "El Niño", "metrics": []}',
+        encoding="utf-8",
+    )
+    input_root = tmp_path / "reports"
+    country_dir = input_root / "el-nino" / "ETH"
+    country_dir.mkdir(parents=True)
+    (country_dir / "0001.md").write_text(
+        "## Metric info\n\nSeq Number: 1\n\nName: GDP\n\n"
+        "Description: d\n\nExample: e\n\nUnit: %\n\n"
+        "## Direct evidence\n\nNone.\n\n## Indirect evidence\n\nNone.\n",
+        encoding="utf-8",
+    )
+
+    from fao_impact_monitor.agent.impact_analyzer_agent import ImpactAnalyzerOutput
+
+    async def fake_analyze(**kwargs: Any) -> ImpactAnalyzerOutput:
+        del kwargs
+        return ImpactAnalyzerOutput(
+            country="Ethiopia",
+            country_iso3="ETH",
+            markdown=(
+                "# Ethiopia: El Niño Risk Outlook\n\n"
+                "## Past impacts\n\nRisk is high. [1]\n\n"
+                "## Expected impacts\n\nOutlook is negative. [1]\n\n"
+                "## Preparedness Considerations\n\nActions exist. [1]\n\n"
+                "## References\n\n1. Example ref\n"
+            ),
+            statements=[],
+            references=["Example ref"],
+            discarded_evidence_ids=[],
+        )
+
+    monkeypatch.setattr(pipeline, "analyze_impact", fake_analyze)
+    monkeypatch.setattr(
+        pipeline,
+        "enrich_structured_latest_values",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "write_impact_analysis_files",
+        lambda **kwargs: (
+            kwargs["output_md"],
+            kwargs["output_md"].with_suffix(".pdf"),
+        ),
+    )
+
+    result = CliRunner().invoke(
+        pipeline.app,
+        [
+            "impact-report",
+            "--countries",
+            "ETH",
+            "--use-case",
+            str(use_case),
+            "--input-root",
+            str(input_root),
+            "--output-root",
+            str(input_root),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ETH impact analysis El Nino.md" in result.output
+    assert "ETH impact analysis El Nino.pdf" in result.output
+
+
+def test_report_pdf_cli_forwards_human_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_build(**kwargs: Any) -> Path:
+        captured.update(kwargs)
+        output = cast(Path, kwargs["output_path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"%PDF-1.4\n")
+        return output
+
+    monkeypatch.setattr(pipeline, "build_research_pdf", fake_build)
+    result = CliRunner().invoke(
+        pipeline.app,
+        [
+            "report-pdf",
+            "--country",
+            "ETH",
+            "--input",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "out.pdf"),
+            "--human",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["human"] is True
+    assert captured["input_dir"] == tmp_path
+
+
+def test_report_pdf_cli_human_defaults_to_human_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_build(**kwargs: Any) -> Path:
+        captured.update(kwargs)
+        output = cast(Path, kwargs["output_path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"%PDF-1.4\n")
+        return output
+
+    monkeypatch.setattr(pipeline, "build_research_pdf", fake_build)
+    result = CliRunner().invoke(
+        pipeline.app,
+        ["report-pdf", "--country", "FJI", "--input", str(tmp_path), "--human"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["human"] is True
+    assert captured["output_path"] == Path(
+        "reports/el-nino/FJI/FJI metrics El Nino - human.pdf"
+    )
 
 
 def test_pdf_search_cli_forwards_query_country_and_limit(
