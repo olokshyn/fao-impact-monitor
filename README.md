@@ -132,12 +132,12 @@ Or run format, lint, type-check and tests together:
 uv run check
 ```
 
-This applies `ruff format`, runs `ruff check`, then `mypy`, then `pytest` (stops on the first failure).
+This applies `ruff format`, runs `ruff check`, then `mypy`, then `pytest` excluding integration tests (stops on the first failure).
 
-Skip integration tests:
+Include integration tests (live external APIs):
 
 ```bash
-uv run check --unit-only
+uv run check --integration
 ```
 
 ### Format and lint (`ruff`)
@@ -182,7 +182,8 @@ Place tests under `./tests`. Run them after `ruff` and `mypy`:
 uv run pytest
 ```
 
-Integration tests (live external APIs) are marked with `@pytest.mark.integration`. Run only unit tests with:
+Integration tests (live external APIs) are marked with `@pytest.mark.integration`.
+`uv run check` already skips them by default. Run only unit tests with pytest directly:
 
 ```bash
 uv run pytest -m "not integration"

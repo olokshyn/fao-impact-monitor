@@ -17,11 +17,11 @@ def main(
     no_tests: Annotated[
         bool, typer.Option("--no-tests", help="Do not run tests.")
     ] = False,
-    unit_only: Annotated[
+    integration: Annotated[
         bool,
         typer.Option(
-            "--unit-only",
-            help='Skip integration tests (pytest -m "not integration").',
+            "--integration",
+            help="Include integration tests (default: skip them).",
         ),
     ] = False,
     test_stage: Annotated[
@@ -32,7 +32,7 @@ def main(
         ),
     ] = None,
 ) -> None:
-    pytest_command = _pytest_command(test_stage, unit_only=unit_only)
+    pytest_command = _pytest_command(test_stage, integration=integration)
     commands = [
         ["ruff", "format", "."],
         ["ruff", "check", "--fix", "."],
@@ -50,7 +50,7 @@ def main(
 def _pytest_command(
     test_stage: str | None,
     *,
-    unit_only: bool = False,
+    integration: bool = False,
 ) -> list[str]:
     if test_stage is None:
         command = ["pytest", "tests"]
@@ -71,7 +71,7 @@ def _pytest_command(
             )
             raise typer.Exit(2)
         command = ["pytest", *[str(path) for path in test_files]]
-    if unit_only:
+    if not integration:
         command.extend(["-m", "not integration"])
     return command
 
