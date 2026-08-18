@@ -521,10 +521,22 @@
         },
         {
             "name": "Deaths and missing persons",
-            "description": "How many people died or were reported missing due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts).",
-            "example": "59 people died in Kenya floods in 2026 (EM-DAT).",
+            "description": "How many people died or were reported missing due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). DesInventar reports deaths and missing persons; EM-DAT reports total deaths. Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
+            "example": "Floods in Kenya caused deaths reported in DesInventar and EM-DAT.",
             "unit": "persons",
             "data_sources": [
+                {
+                    "source": "DesInventar",
+                    "indicator": "muertos",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "desaparece",
+                    "unit": "persons",
+                    "exclusive": true
+                },
                 {
                     "source": "EMDAT",
                     "indicator": "Total Deaths",
@@ -535,7 +547,7 @@
         },
         {
             "name": "People affected, injured and requiring assistance",
-            "description": "How many people were affected, injured or required assistance due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts).",
+            "description": "How many people were affected, injured or required assistance due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). EM-DAT reports injured, affected, and total affected; DesInventar reports injured, affected, and victims (damnificados). Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
             "example": "695,255 people were affected by floods in Kenya in 2023 (EM-DAT).",
             "unit": "persons",
             "data_sources": [
@@ -556,15 +568,45 @@
                     "indicator": "Total Affected",
                     "unit": "persons",
                     "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "heridos",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "afectados",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "damnificados",
+                    "unit": "persons",
+                    "exclusive": true
                 }
             ]
         },
         {
             "name": "Displaced, evacuated and relocated people",
-            "description": "How many people were displaced, evacuated or relocated due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). EM-DAT reports people whose homes were destroyed or heavily damaged and who need shelter (No. Homeless).",
-            "example": "1,000 people were left homeless by floods in Kenya in 2016 (EM-DAT).",
+            "description": "How many people were displaced, evacuated or relocated due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). DesInventar reports evacuated and relocated people; EM-DAT reports people whose homes were destroyed or heavily damaged and who need shelter (No. Homeless). Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
+            "example": "650 people were relocated after floods in Turkana (DesInventar); EM-DAT also reports people left homeless.",
             "unit": "persons",
             "data_sources": [
+                {
+                    "source": "DesInventar",
+                    "indicator": "evacuados",
+                    "unit": "persons",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "reubicados",
+                    "unit": "persons",
+                    "exclusive": true
+                },
                 {
                     "source": "EMDAT",
                     "indicator": "No. Homeless",
@@ -575,10 +617,22 @@
         },
         {
             "name": "Housing damaged and destroyed",
-            "description": "How many houses were damaged or destroyed, and associated reconstruction, insured, and total damage costs, due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). EM-DAT reports people needing shelter (No. Homeless) and CPI-adjusted damage costs.",
-            "example": "Floods in Kenya left 1,000 people homeless and caused substantial adjusted total damage (EM-DAT).",
-            "unit": "persons / 1000 USD",
+            "description": "How many houses were damaged or destroyed, and associated reconstruction, insured, and total damage costs, due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). DesInventar reports houses destroyed and damaged; EM-DAT reports people needing shelter (No. Homeless) and CPI-adjusted damage costs. Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
+            "example": "Floods destroyed and damaged houses in DesInventar records; EM-DAT reports people left homeless and adjusted total damage.",
+            "unit": "houses / persons / 1000 USD",
             "data_sources": [
+                {
+                    "source": "DesInventar",
+                    "indicator": "vivdest",
+                    "unit": "houses",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "vivafec",
+                    "unit": "houses",
+                    "exclusive": true
+                },
                 {
                     "source": "EMDAT",
                     "indicator": "No. Homeless",
@@ -601,6 +655,70 @@
                     "source": "EMDAT",
                     "indicator": "Total Damage, Adjusted ('000 US$)",
                     "unit": "1000 USD",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Education and health facilities affected",
+            "description": "How many education and health facilities were affected due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). DesInventar reports counts of schools and hospitals affected. Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
+            "example": "Landslides damaged schools recorded in DesInventar.",
+            "unit": "facilities",
+            "data_sources": [
+                {
+                    "source": "DesInventar",
+                    "indicator": "nescuelas",
+                    "unit": "facilities",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "nhospitales",
+                    "unit": "facilities",
+                    "exclusive": true
+                }
+            ]
+        },
+        {
+            "name": "Roads, bridges, energy, water and communications affected",
+            "description": "How infrastructure was affected (roads, energy, water, sewerage, and communications) due to climatological, hydrological, or meteorological hazards (contextual for El Niño-related impacts). DesInventar reports kilometres of roads affected and sector flags for transport, energy, water, sewerage, and communications. Impacts are linked to hazards (e.g. floods, drought), not El Niño itself.",
+            "example": "Floods disrupted water supply and communications in DesInventar event records.",
+            "unit": "km / events",
+            "data_sources": [
+                {
+                    "source": "DesInventar",
+                    "indicator": "kmvias",
+                    "unit": "km",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "transporte",
+                    "unit": "events",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "energia",
+                    "unit": "events",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "acueducto",
+                    "unit": "events",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "alcantarillado",
+                    "unit": "events",
+                    "exclusive": true
+                },
+                {
+                    "source": "DesInventar",
+                    "indicator": "comunicaciones",
+                    "unit": "events",
                     "exclusive": true
                 }
             ]

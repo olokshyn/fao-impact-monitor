@@ -43,8 +43,10 @@ from fao_impact_monitor.research_report import (
     metric_report_path,
     missing_researcher_process_jobs,
     parse_countries_iso3,
+    parse_metric_option,
     report_pdf_filename,
     select_metrics,
+    undrr_metric_indices,
     write_metric_report,
 )
 
@@ -103,6 +105,17 @@ def test_select_metrics_rejects_out_of_range() -> None:
         select_metrics(metrics, [0])
     with pytest.raises(ValueError, match="out of range"):
         select_metrics(metrics, [2])
+
+
+def test_parse_metric_option_undrr_and_numbers() -> None:
+    metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
+    undrr = undrr_metric_indices(metrics)
+    assert undrr == [26, 27, 28, 29, 30, 31]
+    assert parse_metric_option(metrics, ["undrr"]) == undrr
+    assert parse_metric_option(metrics, ["3", "undrr", "3"]) == [3, *undrr]
+    assert parse_metric_option(metrics, None) is None
+    with pytest.raises(ValueError, match="Invalid metric selector"):
+        parse_metric_option(metrics, ["nope"])
 
 
 def test_parse_countries_iso3() -> None:
@@ -168,16 +181,19 @@ def test_build_metric_process_jobs_mixed() -> None:
 def test_build_metric_process_jobs_el_nino() -> None:
     metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
     jobs = build_metric_process_jobs(metrics)
-    assert len(jobs) == 15
+    assert len(jobs) == 16
     assert jobs[0].kind == "worldbank"
     assert jobs[0].metric_indices == [1, 2]
     assert jobs[1].kind == "faostat"
     assert jobs[1].metric_indices == list(range(3, 14))
     assert jobs[1].data_source == "FAOSTAT"
-    assert jobs[2].kind == "emdat"
-    assert jobs[2].metric_indices == [26, 27, 28, 29]
-    assert jobs[2].data_source == "EMDAT"
-    researcher_jobs = jobs[3:]
+    assert jobs[2].kind == "desinventar"
+    assert jobs[2].metric_indices == [30, 31]
+    assert jobs[2].data_source == "DesInventar"
+    assert jobs[3].kind == "structured"
+    assert jobs[3].metric_indices == [26, 27, 28, 29]
+    assert jobs[3].data_source is None
+    researcher_jobs = jobs[4:]
     assert len(researcher_jobs) == 12
     assert [job.metric_indices[0] for job in researcher_jobs] == list(range(14, 26))
     assert all(job.kind == "researcher" for job in researcher_jobs)
@@ -342,6 +358,7 @@ def test_format_emdat_result_table_and_reference(tmp_path: Path) -> None:
     )
 
     assert "Source: Total Deaths" in body
+    assert "Dataset: EM-DAT" in body
     assert "| Start Year | Disaster Type | Location | Regions | Value | Unit |" in body
     assert "| 2023 | Flood | Nairobi | Nairobi; Kiambu | 178 | persons |" in body
     assert "| 2016 | Flood | Coast | Coast | 3 | persons |" in body
@@ -349,6 +366,102 @@ def test_format_emdat_result_table_and_reference(tmp_path: Path) -> None:
     assert (tmp_path / "plots" / "deaths-emdat-1.png").is_file()
     assert "EM-DAT" in refs[0]
     assert "https://www.emdat.be" in refs[0]
+
+
+def test_format_desinventar_result_table_and_reference(tmp_path: Path) -> None:
+    from fao_impact_monitor.data_source.desinventar import DesInventarDataResult
+
+    result = DesInventarDataResult(
+        source="DesInventar",
+        title="muertos",
+        url="https://www.desinventar.net/DesInventar/index.jsp",
+        citation="cite",
+        metadata={
+            "indicator": "muertos",
+            "country_iso3": "KEN",
+            "unit": "persons",
+        },
+        data=pd.DataFrame(
+            {
+                "event_id": ["1", "2"],
+                "start_year": [2023, 2016],
+                "start_month": [4, 5],
+                "start_day": [10, 1],
+                "disaster_type": ["FLOOD", "DROUGHT"],
+                "location": ["Nairobi", ""],
+                "regions": [["Nairobi"], ["Turkana"]],
+                "value": [10.0, 0.0],
+            }
+        ),
+    )
+
+    body, refs = format_structured_result(
+        [result],
+        plot_dir=tmp_path / "plots",
+        plot_stem="deaths",
+    )
+
+    assert "Source: muertos" in body
+    assert "Dataset: DesInventar" in body
+    assert "| Event Id | Start Year | Start Month | Start Day | Disaster Type |" in body
+    assert "| 1 | 2023 | 4 | 10 | FLOOD | Nairobi | Nairobi | 10 | persons |" in body
+    assert "| 2 | 2016 | 5 | 1 | DROUGHT |  | Turkana | 0 | persons |" in body
+    assert "![muertos](plots/deaths-desinventar-1.png)" in body
+    assert (tmp_path / "plots" / "deaths-desinventar-1.png").is_file()
+    assert "DesInventar" in refs[0]
+
+
+def test_format_desinventar_emdat_comparison_chart(tmp_path: Path) -> None:
+    from fao_impact_monitor.data_source.desinventar import DesInventarDataResult
+
+    desinventar = DesInventarDataResult(
+        source="DesInventar",
+        title="muertos",
+        url="https://www.desinventar.net/DesInventar/index.jsp",
+        citation="cite",
+        metadata={
+            "indicator": "muertos",
+            "country_iso3": "KEN",
+            "unit": "persons",
+        },
+        data=pd.DataFrame(
+            {
+                "start_year": [2023, 2016],
+                "value": [10.0, 0.0],
+                "regions": [["Nairobi"], ["Turkana"]],
+            }
+        ),
+    )
+    emdat = EmDatDataResult(
+        source="EMDAT",
+        title="Total Deaths",
+        url="https://www.emdat.be",
+        citation="cite",
+        metadata={
+            "indicator": "Total Deaths",
+            "country_iso3": "KEN",
+            "unit": "persons",
+        },
+        data=pd.DataFrame(
+            {
+                "start_year": [2023, 2016],
+                "value": [178.0, 3.0],
+                "regions": [["Nairobi"], ["Coast"]],
+            }
+        ),
+    )
+
+    body, refs = format_structured_result(
+        [desinventar, emdat],
+        plot_dir=tmp_path / "plots",
+        plot_stem="deaths",
+    )
+
+    assert "### Source comparison" in body
+    assert "![DesInventar vs EM-DAT](plots/deaths-comparison.png)" in body
+    assert (tmp_path / "plots" / "deaths-comparison.png").is_file()
+    assert "DesInventar" in refs[0]
+    assert "EM-DAT" in refs[1]
 
 
 def test_metric_report_path_and_defaults() -> None:
@@ -557,6 +670,36 @@ def test_build_research_pdf_writes_pdf(tmp_path: Path) -> None:
     assert b"/Subtype /Image" in pdf_bytes
 
 
+def test_markdown_to_pdf_break_on_h2_starts_each_metric_on_new_page(
+    tmp_path: Path,
+) -> None:
+    import pymupdf
+
+    markdown_text = (
+        "# Ethiopia: UNDRR El Nino\n\n"
+        "## Deaths and missing persons\n\n"
+        "Floods killed 120 people. [1]\n\n"
+        "## People affected, injured and requiring assistance\n\n"
+        "Drought affected 695255 people. [2]\n\n"
+        "## References\n\n"
+        "1. EM-DAT\n"
+        "2. DesInventar\n"
+    )
+    output = tmp_path / "undrr.pdf"
+    markdown_to_pdf(markdown_text, output, break_on_h2=True)
+
+    document = pymupdf.open(output)  # type: ignore[no-untyped-call]
+    assert document.page_count >= 3
+    texts = [page.get_text() for page in cast(Any, document)]
+    deaths_pages = [i for i, text in enumerate(texts) if "Deaths and missing" in text]
+    affected_pages = [
+        i for i, text in enumerate(texts) if "People affected, injured" in text
+    ]
+    assert deaths_pages
+    assert affected_pages
+    assert deaths_pages[0] != affected_pages[0]
+
+
 def test_markdown_to_pdf_renders_fourteen_column_table(tmp_path: Path) -> None:
     import pymupdf
 
@@ -614,6 +757,94 @@ def test_markdown_to_pdf_renders_fourteen_column_table(tmp_path: Path) -> None:
     assert "2025-6-20" in pdf_text
     assert "Hurricane Erik" in pdf_text
     assert "16 persons" in pdf_text
+
+
+def test_markdown_to_pdf_collapses_desinventar_nine_column_table(
+    tmp_path: Path,
+) -> None:
+    """Location and Regions must not paint on top of each other in the PDF."""
+    import markdown as md
+    import pymupdf
+
+    from fao_impact_monitor.research_report import _classify_wide_html_tables
+
+    headers = [
+        "Event Id",
+        "Start Year",
+        "Start Month",
+        "Start Day",
+        "Disaster Type",
+        "Location",
+        "Regions",
+        "Value",
+        "Unit",
+    ]
+    values = [
+        "30884",
+        "2025",
+        "8",
+        "9",
+        "WINDSTORM",
+        "Afdera town",
+        "Afar",
+        "3",
+        "persons",
+    ]
+    markdown_table = "\n".join(
+        [
+            "**DesInventar / muertos**",
+            "",
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+            "| " + " | ".join(values) + " |",
+            (
+                "| 30191 | 2024 | 8 | 19 | FLOOD | daleti | Benishangul Gumuz |"
+                " 12 | persons |"
+            ),
+        ]
+    )
+
+    html = md.markdown(
+        markdown_table,
+        extensions=["tables", "fenced_code", "sane_lists", "nl2br"],
+        output_format="html5",
+    )
+    classified = _classify_wide_html_tables(html)
+    assert 'class="emdat-table"' in classified
+    assert "Afdera town<br />Afar" in classified
+    assert "daleti<br />Benishangul Gumuz" in classified
+    assert classified.count("<th ") == 5
+
+    output = tmp_path / "desinventar-table.pdf"
+    written = markdown_to_pdf(markdown_table, output)
+    assert written == output
+    document = pymupdf.open(output)  # type: ignore[no-untyped-call]
+    pdf_text = "\n".join(page.get_text() for page in cast(Any, document))
+    assert "Event" in pdf_text
+    assert "Period" in pdf_text
+    assert "Area" in pdf_text
+    assert "30884" in pdf_text
+    assert "2025-8-9" in pdf_text
+    assert "Afdera town" in pdf_text
+    assert "Afar" in pdf_text
+    assert "3 persons" in pdf_text
+    # Collapsed layout should not keep the raw 9-column headers.
+    assert "Start Month" not in pdf_text
+    assert "Start Day" not in pdf_text
+
+
+def test_collapse_desinventar_html_table_requires_expected_headers() -> None:
+    from fao_impact_monitor.research_report import _collapse_desinventar_html_table
+
+    html = (
+        "<table><thead><tr>"
+        "<th>Event Id</th><th>Start Year</th><th>Value</th>"
+        "</tr></thead><tbody>"
+        "<tr><td>1</td><td>2024</td><td>3</td></tr>"
+        "</tbody></table>"
+    )
+    headers = ["Event Id", "Start Year", "Value"]
+    assert _collapse_desinventar_html_table(html, headers) is None
 
 
 def test_build_research_pdf_makes_local_links_clickable(tmp_path: Path) -> None:
@@ -996,7 +1227,7 @@ def test_el_nino_routing_matches_plan() -> None:
     cropland_index = next(
         index for index, metric in enumerate(metrics) if metric.name == "Cropland"
     )
-    emdat_index = next(
+    impact_index = next(
         index
         for index, metric in enumerate(metrics)
         if metric.name == "Deaths and missing persons"
@@ -1010,6 +1241,11 @@ def test_el_nino_routing_matches_plan() -> None:
     )
     assert all(
         metric_path(metric) == "researcher"
-        for metric in metrics[cropland_index:emdat_index]
+        for metric in metrics[cropland_index:impact_index]
     )
-    assert all(metric_path(metric) == "emdat" for metric in metrics[emdat_index:])
+    assert metric_path(metrics[impact_index]) == "structured"
+    assert metric_path(metrics[impact_index + 1]) == "structured"
+    assert metric_path(metrics[impact_index + 2]) == "structured"
+    assert metric_path(metrics[impact_index + 3]) == "structured"
+    assert metric_path(metrics[impact_index + 4]) == "desinventar"
+    assert metric_path(metrics[impact_index + 5]) == "desinventar"

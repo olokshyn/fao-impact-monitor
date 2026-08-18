@@ -13,11 +13,15 @@ from fao_impact_monitor.impact_report import (
     construct_reference_line,
     default_impact_analysis_md_path,
     default_impact_analysis_pdf_path,
+    default_undrr_report_md_path,
+    default_undrr_report_pdf_path,
     impact_analysis_stem,
     load_plot_image_bytes,
     parse_metric_report_directory,
     parse_metric_report_file,
     render_impact_markdown,
+    undrr_metric_seq_numbers,
+    undrr_report_stem,
 )
 from fao_impact_monitor.research_report import (
     format_structured_result,
@@ -34,6 +38,113 @@ def test_impact_analysis_paths_start_with_iso3() -> None:
     assert md.name == "ETH impact analysis El Nino.md"
     assert pdf.name == "ETH impact analysis El Nino.pdf"
     assert md.parent.name == "ETH"
+
+
+def test_undrr_report_paths_ascii_fold_use_case_name() -> None:
+    assert undrr_report_stem("eth", use_case="el-nino") == "ETH UNDRR El Nino"
+    md = default_undrr_report_md_path("eth", use_case="el-nino")
+    pdf = default_undrr_report_pdf_path("ETH", use_case="el-nino")
+    assert md.name == "ETH UNDRR El Nino.md"
+    assert pdf.name == "ETH UNDRR El Nino.pdf"
+    assert md.parent.name == "ETH"
+
+
+def test_undrr_metric_seq_numbers_are_emdat_desinventar_only() -> None:
+    selected = undrr_metric_seq_numbers("use-cases/el-nino.json")
+    assert selected == {26, 27, 28, 29, 30, 31}
+
+
+def test_truncate_markdown_table_keeps_header_and_twenty_rows() -> None:
+    from fao_impact_monitor.impact_report import truncate_markdown_table
+
+    header = "| A | B | C |"
+    sep = "| --- | --- | --- |"
+    rows = [f"| {i} | x | y |" for i in range(25)]
+    table = "\n".join([header, sep, *rows])
+    truncated = truncate_markdown_table(table, max_data_rows=20)
+    lines = truncated.splitlines()
+    assert lines[0] == header
+    assert lines[1] == sep
+    assert len(lines) == 2 + 20 + 1  # header, sep, 20 data, ending
+    assert lines[-1] == "| ... | ... | ... |"
+    assert "| 19 | x | y |" in truncated
+    assert "| 20 | x | y |" not in truncated
+
+
+def test_append_undrr_source_tables_includes_each_dataset(
+    tmp_path: Path,
+) -> None:
+    from fao_impact_monitor.impact_report import append_undrr_source_tables
+
+    plot = _tiny_png(tmp_path / "plots" / "0026-desinventar-1.png")
+    report = _write(
+        tmp_path / "0026.md",
+        f"""## Metric info
+
+Seq Number: 26
+
+Name: Deaths and missing persons
+
+Description: d
+
+Example: e
+
+Unit: persons
+
+## Direct evidence
+
+### Direct Evidence 1
+
+Source: muertos
+
+Dataset: DesInventar
+
+Indicator: muertos
+
+Source data:
+
+| Year | Value |
+| --- | --- |
+| 2024 | 1 |
+| 2023 | 2 |
+| 2022 | 3 |
+
+Plot: ![{plot.stem}](plots/{plot.name})
+
+### Direct Evidence 2
+
+Source: Total Deaths
+
+Dataset: EM-DAT
+
+Indicator: Total Deaths
+
+Source data:
+
+| Year | Total Deaths |
+| --- | --- |
+| 2024 | 10 |
+| 2023 | 20 |
+
+## Indirect evidence
+
+None.
+""",
+    )
+    parsed = parse_metric_report_file(report)
+    markdown = (
+        "# Ethiopia: UNDRR El Nino\n\n"
+        "## Deaths and missing persons\n\n"
+        "Floods killed people. [1]\n\n"
+        "## References\n\n"
+        "1. example\n"
+    )
+    combined = append_undrr_source_tables(markdown, [parsed], max_data_rows=20)
+    assert "**DesInventar / muertos**" in combined
+    assert "**EM-DAT / Total Deaths**" in combined
+    assert "| 2024 | 1 |" in combined
+    assert "| 2024 | 10 |" in combined
+    assert combined.index("DesInventar") < combined.index("## References")
 
 
 def _write(path: Path, text: str) -> Path:
@@ -318,12 +429,11 @@ None.
         sections={
             "Past impacts": "Agriculture employed many people. [1]",
             "Expected impacts": "Risks remain elevated. [1]",
-            "Preparedness Considerations": "Anticipatory actions exist. [1]",
         },
         references=["World Bank indicator"],
     )
     assert markdown.startswith("# Malawi: El Nino Risk Outlook")
     assert "## Past impacts" in markdown
     assert "## Expected impacts" in markdown
-    assert "## Preparedness Considerations" in markdown
+    assert "## Preparedness Considerations" not in markdown
     assert "## References" in markdown

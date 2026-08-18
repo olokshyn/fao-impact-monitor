@@ -52,6 +52,17 @@ uv run pipeline research \
   --source FAOSTAT
 ```
 
+Run only the EM-DAT / DesInventar (UNDRR) metrics for one or more countries.
+Missing DesInventar country files or empty EM-DAT country slices are skipped
+silently (other sources in the same metric still write):
+
+```bash
+uv run pipeline research \
+  --countries ETH,KEN,MWI,GTM,FJI \
+  --use-case use-cases/el-nino.json \
+  --metric undrr
+```
+
 Run only the EM-DAT metrics:
 
 ```bash
@@ -59,6 +70,15 @@ uv run pipeline research \
   --country KEN \
   --use-case use-cases/el-nino.json \
   --source emdat
+```
+
+Run only the DesInventar metrics:
+
+```bash
+uv run pipeline research \
+  --country KEN \
+  --use-case use-cases/el-nino.json \
+  --source desinventar
 ```
 
 Compile a cited El Niño impact analysis (markdown + PDF) from existing
@@ -72,6 +92,18 @@ uv run pipeline impact-report \
 
 Outputs `reports/<USE_CASE>/<COUNTRY>/<ISO3> impact analysis <use-case.name>.md`
 and the matching `.pdf` (e.g. `ETH impact analysis El Nino.pdf`).
+
+Compile a cited UNDRR disaster-loss summary from EM-DAT / DesInventar
+per-metric reports:
+
+```bash
+uv run pipeline undrr-report \
+  --countries ETH,KEN,MWI \
+  --use-case use-cases/el-nino.json
+```
+
+Outputs `reports/<USE_CASE>/<COUNTRY>/<ISO3> UNDRR <use-case.name>.md`
+and the matching `.pdf` (e.g. `ETH UNDRR El Nino.pdf`).
 
 Combined per-metric PDFs use
 `<ISO3> metrics <use-case.name>.pdf` (e.g. `ETH metrics El Nino.pdf`).

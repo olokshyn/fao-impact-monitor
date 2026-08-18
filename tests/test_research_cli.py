@@ -274,6 +274,7 @@ def test_run_research_loads_emdat_and_writes_table(
     assert "## Metric info" in report
     assert "# El Niño research - KEN" not in report
     assert "Source: Total Deaths" in report
+    assert "Dataset: EM-DAT" in report
     assert (
         "| Start Year | Disaster Type | Location | Regions | Value | Unit |" in report
     )
@@ -337,6 +338,27 @@ def test_run_research_filters_metrics_by_emdat_source(
         example="Example",
         data_sources=[DataSourceConfig(source="EMDAT", exclusive=True)],
     )
+    mixed_metric = Metric(
+        name="Mixed impact",
+        description="Desc",
+        example="Example",
+        data_sources=[
+            DataSourceConfig.model_validate(
+                {
+                    "source": "DesInventar",
+                    "indicator": "muertos",
+                    "exclusive": True,
+                }
+            ),
+            DataSourceConfig.model_validate(
+                {
+                    "source": "EMDAT",
+                    "indicator": "Total Deaths",
+                    "exclusive": True,
+                }
+            ),
+        ],
+    )
     metrics = [
         _metric("Repository metric"),
         _metric("World Bank", worldbank=True),
@@ -347,6 +369,7 @@ def test_run_research_filters_metrics_by_emdat_source(
             data_sources=[DataSourceConfig(source="FAOSTAT", exclusive=True)],
         ),
         emdat_metric,
+        mixed_metric,
     ]
     selected: list[tuple[int, str]] = []
     monkeypatch.setattr(
@@ -374,7 +397,87 @@ def test_run_research_filters_metrics_by_emdat_source(
         )
     )
 
-    assert selected == [(4, "EMDAT metric")]
+    assert selected == [(4, "EMDAT metric"), (5, "Mixed impact")]
+
+
+def test_run_research_filters_metrics_by_desinventar_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mixed_metric = Metric(
+        name="Mixed impact",
+        description="Desc",
+        example="Example",
+        data_sources=[
+            DataSourceConfig.model_validate(
+                {
+                    "source": "DesInventar",
+                    "indicator": "muertos",
+                    "exclusive": True,
+                }
+            ),
+            DataSourceConfig.model_validate(
+                {
+                    "source": "EMDAT",
+                    "indicator": "Total Deaths",
+                    "exclusive": True,
+                }
+            ),
+        ],
+    )
+    metrics = [
+        _metric("Repository metric"),
+        Metric(
+            name="DesInventar only",
+            description="Desc",
+            example="Example",
+            data_sources=[
+                DataSourceConfig.model_validate(
+                    {
+                        "source": "DesInventar",
+                        "indicator": "nescuelas",
+                        "exclusive": True,
+                    }
+                )
+            ],
+        ),
+        mixed_metric,
+    ]
+    selected: list[tuple[int, str]] = []
+    fetched_sources: list[list[str]] = []
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline.Metric.from_use_case",
+        lambda _path: metrics,
+    )
+
+    async def fake_run_one_metric(**kwargs: Any) -> Path:
+        selected.append((kwargs["index"], kwargs["metric"].name))
+        data_source = kwargs.get("data_source")
+        configs = list(kwargs["metric"].data_sources)
+        if data_source is not None:
+            source_key = str(data_source).casefold()
+            configs = [c for c in configs if c.source.casefold() == source_key]
+        fetched_sources.append([c.source for c in configs])
+        return cast(Path, kwargs["output_dir"]) / f"{kwargs['index']:04d}.md"
+
+    monkeypatch.setattr(
+        "fao_impact_monitor.pipeline._run_one_metric",
+        fake_run_one_metric,
+    )
+
+    asyncio.run(
+        _run_research(
+            use_case_path=tmp_path / "case.json",
+            country_iso3="KEN",
+            metric_indices=None,
+            output_dir=tmp_path / "reports",
+            max_parallel=1,
+            data_source="desinventar",
+        )
+    )
+
+    assert selected == [(2, "DesInventar only"), (3, "Mixed impact")]
+    assert fetched_sources == [["DesInventar"], ["DesInventar"]]
 
 
 def test_research_cli_forwards_source_filter(
@@ -382,7 +485,7 @@ def test_research_cli_forwards_source_filter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     use_case = tmp_path / "case.json"
-    use_case.write_text("{}", encoding="utf-8")
+    use_case.write_text('{"metrics": []}', encoding="utf-8")
     captured: dict[str, Any] = {}
 
     async def fake_run_research(**kwargs: Any) -> Path:
@@ -411,12 +514,43 @@ def test_research_cli_forwards_source_filter(
     assert captured["use_pdf_vector_store"] is True
 
 
+def test_research_cli_undrr_metric_alias_and_countries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = Path("use-cases/el-nino.json")
+    calls: list[dict[str, Any]] = []
+
+    async def fake_run_research(**kwargs: Any) -> Path:
+        calls.append(dict(kwargs))
+        return cast(Path, kwargs["output_dir"])
+
+    monkeypatch.setattr(pipeline, "_run_research", fake_run_research)
+
+    result = CliRunner().invoke(
+        pipeline.app,
+        [
+            "research",
+            "--countries",
+            "ETH,KEN",
+            "--use-case",
+            str(use_case),
+            "--metric",
+            "undrr",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [call["country_iso3"] for call in calls] == ["ETH", "KEN"]
+    assert all(call["metric_indices"] == [26, 27, 28, 29, 30, 31] for call in calls)
+
+
 def test_research_parallel_cli_submits_country_job_matrix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     use_case = tmp_path / "case.json"
-    use_case.write_text("{}", encoding="utf-8")
+    use_case.write_text('{"metrics": []}', encoding="utf-8")
     captured: dict[str, Any] = {}
 
     def fake_run_parallel(**kwargs: Any) -> list[dict[str, Any]]:
@@ -611,7 +745,7 @@ def test_research_parallel_cli_forwards_continue_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     use_case = tmp_path / "case.json"
-    use_case.write_text("{}", encoding="utf-8")
+    use_case.write_text('{"metrics": []}', encoding="utf-8")
     captured: dict[str, Any] = {}
 
     def fake_run_parallel(**kwargs: Any) -> list[dict[str, Any]]:
@@ -1163,6 +1297,85 @@ def test_impact_report_cli_writes_markdown_and_pdf(
     assert result.exit_code == 0, result.output
     assert "ETH impact analysis El Nino.md" in result.output
     assert "ETH impact analysis El Nino.pdf" in result.output
+
+
+def test_undrr_report_cli_writes_markdown_and_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_case = tmp_path / "el-nino.json"
+    use_case.write_text(
+        """{
+          "name": "El Niño",
+          "metrics": [
+            {
+              "name": "Deaths and missing persons",
+              "description": "d",
+              "example": "e",
+              "unit": "persons",
+              "data_sources": [
+                {"source": "EMDAT", "exclusive": true, "config": {}}
+              ]
+            }
+          ]
+        }""",
+        encoding="utf-8",
+    )
+    input_root = tmp_path / "reports"
+    country_dir = input_root / "el-nino" / "ETH"
+    country_dir.mkdir(parents=True)
+    (country_dir / "0001.md").write_text(
+        "## Metric info\n\nSeq Number: 1\n\nName: Deaths and missing persons\n\n"
+        "Description: d\n\nExample: e\n\nUnit: persons\n\n"
+        "## Direct evidence\n\nNone.\n\n## Indirect evidence\n\nNone.\n",
+        encoding="utf-8",
+    )
+
+    from fao_impact_monitor.agent.undrr_summarizer_agent import UndrrSummarizerOutput
+
+    async def fake_summarize(**kwargs: Any) -> UndrrSummarizerOutput:
+        assert "data_filter" in kwargs
+        return UndrrSummarizerOutput(
+            country="Ethiopia",
+            country_iso3="ETH",
+            use_case_ascii="El Nino",
+            markdown=(
+                "# Ethiopia: UNDRR El Nino\n\n"
+                "## Deaths and missing persons\n\n"
+                "Floods killed 120 people. [1]\n\n"
+                "## References\n\n1. EM-DAT Total Deaths\n"
+            ),
+            statements=[],
+            references=["EM-DAT Total Deaths"],
+        )
+
+    monkeypatch.setattr(pipeline, "summarize_undrr", fake_summarize)
+    monkeypatch.setattr(
+        pipeline,
+        "write_undrr_report_files",
+        lambda **kwargs: (
+            kwargs["output_md"],
+            kwargs["output_md"].with_suffix(".pdf"),
+        ),
+    )
+
+    result = CliRunner().invoke(
+        pipeline.app,
+        [
+            "undrr-report",
+            "--countries",
+            "ETH",
+            "--use-case",
+            str(use_case),
+            "--input-root",
+            str(input_root),
+            "--output-root",
+            str(input_root),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "ETH UNDRR El Nino.md" in result.output
+    assert "ETH UNDRR El Nino.pdf" in result.output
 
 
 def test_report_pdf_cli_forwards_human_flag(

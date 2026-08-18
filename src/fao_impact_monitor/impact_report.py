@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -16,6 +17,7 @@ from fao_impact_monitor.research_report import (
     list_metric_report_files,
     markdown_to_pdf,
     resolve_use_case_path,
+    undrr_metric_indices,
     use_case_display_name,
 )
 from fao_impact_monitor.utils.document_uri import (
@@ -37,7 +39,12 @@ _SOURCE_TEXT_FENCE = re.compile(
     r"Source text:\s*\n+```(?:\n)?(.*?)```",
     re.DOTALL,
 )
+_SOURCE_DATA_BLOCK = re.compile(
+    r"Source data:\s*\n+(.*?)(?=\nPlot:|\nSource text:|\nVerified visual facts:|\Z)",
+    re.DOTALL,
+)
 _PLOT_MARKDOWN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_STRUCTURED_DATASETS = frozenset({"em-dat", "emdat", "desinventar"})
 _LATEST_VALUE = re.compile(
     r"^Latest value:\s*(.+?)\s*\((\d{4})\)\s*$",
     re.IGNORECASE,
@@ -69,6 +76,8 @@ class ParsedEvidence:
     printed_pages: list[str] = field(default_factory=list)
     events: str | None = None
     indicator: str | None = None
+    dataset: str | None = None
+    source_data: str | None = None
     source_text: str | None = None
     verified_visual_facts: list[str] = field(default_factory=list)
     plot_path: Path | None = None
@@ -121,6 +130,177 @@ def default_impact_analysis_pdf_path(
     return default_impact_analysis_md_path(
         country_iso3, use_case=use_case, output_root=output_root
     ).with_suffix(".pdf")
+
+
+def undrr_report_stem(
+    country_iso3: str,
+    *,
+    use_case: Path | str = "el-nino",
+) -> str:
+    """Filename stem, e.g. ``ETH UNDRR El Nino``."""
+    use_case_path = resolve_use_case_path(use_case)
+    name = use_case_display_name(use_case_path)
+    return ascii_relative_path(f"{country_iso3.upper()} UNDRR {name}")
+
+
+def default_undrr_report_md_path(
+    country_iso3: str,
+    *,
+    use_case: Path | str = "el-nino",
+    output_root: Path | None = None,
+) -> Path:
+    iso3 = country_iso3.upper()
+    use_case_path = resolve_use_case_path(use_case)
+    base = (
+        (output_root / use_case_path.stem / iso3)
+        if output_root is not None
+        else default_research_dir(iso3, use_case=use_case_path)
+    )
+    return base / f"{undrr_report_stem(iso3, use_case=use_case_path)}.md"
+
+
+def default_undrr_report_pdf_path(
+    country_iso3: str,
+    *,
+    use_case: Path | str = "el-nino",
+    output_root: Path | None = None,
+) -> Path:
+    return default_undrr_report_md_path(
+        country_iso3, use_case=use_case, output_root=output_root
+    ).with_suffix(".pdf")
+
+
+def write_undrr_report_files(
+    *,
+    markdown_text: str,
+    output_md: Path,
+    output_pdf: Path | None = None,
+) -> tuple[Path, Path]:
+    """Write UNDRR summary markdown and PDF next to metric reports.
+
+    Each ``##`` metric heading starts on a new PDF page.
+    """
+    output_md.parent.mkdir(parents=True, exist_ok=True)
+    output_md.write_text(markdown_text, encoding="utf-8")
+    pdf_path = output_pdf or output_md.with_suffix(".pdf")
+    markdown_to_pdf(
+        markdown_text,
+        pdf_path,
+        base_dir=output_md.parent,
+        break_on_h2=True,
+    )
+    return output_md, pdf_path
+
+
+_TABLE_SEP = re.compile(r"^\|?\s*:?-{3,}")
+_UNDRR_SOURCE_TABLE_MAX_ROWS = 20
+
+
+def markdown_table_column_count(header_line: str) -> int:
+    """Count columns from a markdown table header row (pipes as delimiters)."""
+    cells = [cell.strip() for cell in header_line.strip().strip("|").split("|")]
+    return max(1, len(cells))
+
+
+def truncate_markdown_table(
+    table: str,
+    *,
+    max_data_rows: int = _UNDRR_SOURCE_TABLE_MAX_ROWS,
+) -> str:
+    """Keep header + separator + up to ``max_data_rows`` data rows as-is.
+
+    Does not parse cell values. When truncated, appends an ellipsis ending row
+    with the same column count as the header.
+    """
+    lines = [line for line in table.strip().splitlines() if line.strip()]
+    if not lines:
+        return table.strip()
+
+    header = lines[0]
+    col_count = markdown_table_column_count(header)
+    kept = [header]
+    index = 1
+    if index < len(lines) and _TABLE_SEP.match(lines[index].replace(" ", "")):
+        kept.append(lines[index])
+        index += 1
+
+    data_rows = lines[index:]
+    kept.extend(data_rows[:max_data_rows])
+    if len(data_rows) > max_data_rows:
+        ending = "| " + " | ".join("..." for _ in range(col_count)) + " |"
+        kept.append(ending)
+    return "\n".join(kept)
+
+
+def append_undrr_source_tables(
+    markdown_text: str,
+    reports: Sequence[ParsedMetricReport],
+    *,
+    max_data_rows: int = _UNDRR_SOURCE_TABLE_MAX_ROWS,
+) -> str:
+    """Insert truncated Source data tables under each metric heading.
+
+    For each Direct evidence block with a markdown table, copy header + up to
+    ``max_data_rows`` rows (DesInventar and EM-DAT separately when both exist).
+    """
+    by_name = {report.meta.name: report for report in reports}
+    lines = markdown_text.splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        out.append(line)
+        heading = line[3:].strip() if line.startswith("## ") else None
+        if heading is None or heading == "References":
+            index += 1
+            continue
+
+        index += 1
+        while index < len(lines) and not lines[index].startswith("## "):
+            out.append(lines[index])
+            index += 1
+
+        report = by_name.get(heading)
+        if report is None:
+            continue
+        table_blocks: list[str] = []
+        for evidence in report.direct:
+            if not evidence.source_data or "|" not in evidence.source_data:
+                continue
+            truncated = truncate_markdown_table(
+                evidence.source_data, max_data_rows=max_data_rows
+            )
+            label_parts = [
+                part
+                for part in (evidence.dataset, evidence.indicator or evidence.title)
+                if part
+            ]
+            label = " / ".join(label_parts) if label_parts else evidence.evidence_id
+            table_blocks.extend([f"**{label}**", "", truncated, ""])
+        if table_blocks:
+            # Keep a blank line before tables when the answer body ended mid-stream.
+            if out and out[-1].strip():
+                out.append("")
+            out.extend(table_blocks)
+
+    text = "\n".join(out).rstrip() + "\n"
+    return text
+
+
+def undrr_metric_seq_numbers(use_case_path: Path | str) -> set[int]:
+    """1-based seq numbers whose exclusive sources are only EM-DAT / DesInventar."""
+    metrics = Metric.from_use_case(use_case_path)
+    return set(undrr_metric_indices(metrics))
+
+
+def filter_undrr_reports(
+    reports: list[ParsedMetricReport],
+    *,
+    use_case_path: Path | str,
+) -> list[ParsedMetricReport]:
+    """Keep parsed reports for EM-DAT / DesInventar metrics only."""
+    allowed = undrr_metric_seq_numbers(use_case_path)
+    return [report for report in reports if report.meta.seq_number in allowed]
 
 
 def write_impact_analysis_files(
@@ -228,6 +408,11 @@ def construct_reference_line(
             suffix = f" (World Bank indicator `{indicator}`)" if indicator else ""
         elif evidence.source_type == "faostat":
             suffix = f" (FAOSTAT `{indicator}`)" if indicator else ""
+        elif evidence.dataset:
+            if indicator:
+                suffix = f" ({evidence.dataset} `{indicator}`)"
+            else:
+                suffix = f" ({evidence.dataset})"
         else:
             suffix = ""
         if indicator_url:
@@ -402,8 +587,17 @@ def _parse_evidence_block(
         else body
     )
 
-    fields = _parse_simple_fields(body_without_text)
-    plot_match = _PLOT_MARKDOWN.search(body_without_text)
+    source_data_match = _SOURCE_DATA_BLOCK.search(body_without_text)
+    source_data = source_data_match.group(1).strip() if source_data_match else None
+    body_without_data = (
+        body_without_text[: source_data_match.start()]
+        + body_without_text[source_data_match.end() :]
+        if source_data_match
+        else body_without_text
+    )
+
+    fields = _parse_simple_fields(body_without_data)
+    plot_match = _PLOT_MARKDOWN.search(body_without_data)
     plot_path: Path | None = None
     if plot_match is not None:
         relative = plot_match.group(2).strip()
@@ -413,6 +607,9 @@ def _parse_evidence_block(
     source_url = fields.get("Source url") or None
     source_title = fields.get("Source title") or None
     indicator = fields.get("Indicator") or None
+    dataset = fields.get("Dataset") or None
+    if dataset in {None, "None.", "None", ""}:
+        dataset = None
     provenance = fields.get("Evidence id") or None
     events = fields.get("Events")
     if events in {None, "None.", "None"}:
@@ -433,7 +630,7 @@ def _parse_evidence_block(
                 latest_value = value
             break
     # Also accept full-line form when field parser kept year in value.
-    for chunk in _FIELD_SPLIT.split(body_without_text):
+    for chunk in _FIELD_SPLIT.split(body_without_data):
         match = _LATEST_VALUE.match(chunk.strip())
         if match:
             latest_value = match.group(1).strip()
@@ -441,8 +638,8 @@ def _parse_evidence_block(
             break
 
     visual_facts: list[str] = []
-    if "Verified visual facts:" in body_without_text:
-        facts_part = body_without_text.split("Verified visual facts:", 1)[1]
+    if "Verified visual facts:" in body_without_data:
+        facts_part = body_without_data.split("Verified visual facts:", 1)[1]
         for line in facts_part.splitlines():
             line = line.strip()
             if line.startswith("- "):
@@ -452,6 +649,7 @@ def _parse_evidence_block(
         source_field=source_field,
         source_url=source_url,
         indicator=indicator,
+        dataset=dataset,
         plot_path=plot_path,
         physical_pages=physical_pages,
         provenance=provenance,
@@ -477,6 +675,8 @@ def _parse_evidence_block(
         printed_pages=printed_pages,
         events=events,
         indicator=indicator,
+        dataset=dataset,
+        source_data=source_data,
         source_text=source_text,
         verified_visual_facts=visual_facts,
         plot_path=plot_path,
@@ -491,10 +691,13 @@ def _infer_source_type(
     source_field: str,
     source_url: str | None,
     indicator: str | None,
+    dataset: str | None,
     plot_path: Path | None,
     physical_pages: list[int],
     provenance: str | None,
 ) -> EvidenceSourceType:
+    if dataset is not None and dataset.casefold() in _STRUCTURED_DATASETS:
+        return "structured"
     if plot_path is not None or (indicator and not provenance and not physical_pages):
         if indicator and re.fullmatch(r"[A-Z]{2}\.[A-Z0-9.]+", indicator or ""):
             return "worldbank"
@@ -541,6 +744,30 @@ def render_impact_markdown(
     for heading in ("Past impacts", "Expected impacts"):
         body = sections.get(heading, "").strip()
         parts.extend([f"## {heading}", "", body or "_No supported evidence._", ""])
+    parts.extend(["## References", ""])
+    if references:
+        parts.extend(
+            f"{index}. {line}" for index, line in enumerate(references, start=1)
+        )
+        parts.append("")
+    else:
+        parts.extend(["None.", ""])
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def render_undrr_markdown(
+    *,
+    country_name: str,
+    use_case_ascii: str,
+    sections: list[tuple[str, str]],
+    references: list[str],
+) -> str:
+    """Assemble the UNDRR per-metric summary markdown document."""
+    parts = [f"# {country_name}: UNDRR {use_case_ascii}", ""]
+    for heading, body in sections:
+        parts.extend(
+            [f"## {heading}", "", body.strip() or "_No supported evidence._", ""]
+        )
     parts.extend(["## References", ""])
     if references:
         parts.extend(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -23,7 +24,13 @@ from fao_impact_monitor.agent.researcher_agent import (
     format_source_origin,
     is_direct_evidence_claim,
 )
-from fao_impact_monitor.data_plot import plot_time_series
+from fao_impact_monitor.data_plot import plot_comparison_time_series, plot_time_series
+from fao_impact_monitor.data_source.desinventar import (
+    DesInventarDataResult,
+)
+from fao_impact_monitor.data_source.desinventar import (
+    national_totals_by_year as desinventar_national_totals_by_year,
+)
 from fao_impact_monitor.data_source.emdat import (
     EmDatDataResult,
     national_totals_by_year,
@@ -39,9 +46,11 @@ from fao_impact_monitor.utils.document_uri import (
     markdown_document_target,
 )
 
-MetricPath = Literal["worldbank", "faostat", "emdat", "researcher"]
+MetricPath = Literal[
+    "worldbank", "faostat", "emdat", "desinventar", "structured", "researcher"
+]
 
-_STRUCTURED_DATA_SOURCES = {"FAOSTAT", "WorldBank", "EMDAT"}
+_STRUCTURED_DATA_SOURCES = {"FAOSTAT", "WorldBank", "EMDAT", "DesInventar"}
 
 _METRIC_REPORT_FILENAME = re.compile(r"^\d{4}\.md$")
 _SECTION_HEADING = re.compile(r"^##\s+(\d+)\.\s+(.*\S)\s*$")
@@ -88,7 +97,14 @@ h3 {
   page-break-before: always;
 }
 table { border-collapse: collapse; width: 100%; margin: 0.6em 0; }
-th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: left; }
+th, td {
+  border: 1px solid #ccc;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
 th { background: #f3f3f3; }
 table.wide-table { font-size: 7pt; }
 table.wide-table th, table.wide-table td { padding: 2px; }
@@ -149,6 +165,21 @@ def use_case_display_name(use_case: Path | str = _DEFAULT_USE_CASE) -> str:
         if isinstance(raw_name, str) and raw_name.strip():
             return raw_name.strip()
     return use_case_path.stem
+
+
+def use_case_data_filter(use_case: Path | str = _DEFAULT_USE_CASE) -> str | None:
+    """Return the use-case ``data_filter`` field when present."""
+    use_case_path = resolve_use_case_path(use_case)
+    try:
+        payload = json.loads(use_case_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("data_filter")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 def report_pdf_filename(
@@ -512,22 +543,31 @@ def markdown_to_pdf(
     output_path: Path,
     *,
     base_dir: Path | None = None,
+    break_on_h2: bool = False,
 ) -> Path:
     """Render markdown to a PDF file via HTML intermediate.
 
-    Each ``##`` metric section is wrapped so it starts on a new page and keeps
+    Each metric section is wrapped so it starts on a new page and keeps
     its heading with the following content.
+
+    By default only numbered metric headings (``## N. …`` / ``# N. …``) and
+    ``## Metric info`` start a section. Pass ``break_on_h2=True`` to start a
+    new page on every ``##`` heading (used for UNDRR reports).
     """
     lines = markdown_text.splitlines()
     header_lines: list[str] = []
     sections: list[list[str]] = []
     current: list[str] | None = None
     for line in lines:
-        if (
-            line == _METRIC_INFO_HEADING
-            or _SECTION_HEADING.match(line)
-            or _NUMBERED_H1_HEADING.match(line)
-        ):
+        if break_on_h2:
+            is_section = line.startswith("## ")
+        else:
+            is_section = (
+                line == _METRIC_INFO_HEADING
+                or _SECTION_HEADING.match(line) is not None
+                or _NUMBERED_H1_HEADING.match(line) is not None
+            )
+        if is_section:
             if current is not None:
                 sections.append(current)
             current = [line]
@@ -605,12 +645,84 @@ def _classify_wide_html_tables(html: str) -> str:
                 return collapsed
             css_class = "very-wide-table"
         elif column_count >= 8:
+            collapsed = _collapse_desinventar_html_table(table, headers)
+            if collapsed is not None:
+                return collapsed
             css_class = "wide-table"
         else:
             return table
         return table.replace("<table>", f'<table class="{css_class}">', 1)
 
     return _HTML_TABLE.sub(classify, html)
+
+
+def _collapse_desinventar_html_table(table: str, headers: list[str]) -> str | None:
+    """Collapse DesInventar fields into five readable PDF columns.
+
+    Location and Regions are stacked with ``<br />`` so xhtml2pdf does not
+    paint both cells on top of each other in a cramped 9-column layout.
+    """
+    names = [_HTML_TAG.sub("", header).strip().casefold() for header in headers]
+    index = {name: position for position, name in enumerate(names)}
+    required = {
+        "event id",
+        "start year",
+        "start month",
+        "start day",
+        "disaster type",
+        "location",
+        "regions",
+        "value",
+        "unit",
+    }
+    if not required.issubset(index):
+        return None
+
+    rendered_rows: list[str] = []
+    for row_html in _HTML_TABLE_ROW.findall(table):
+        cells = _HTML_TABLE_CELL.findall(row_html)
+        if len(cells) != len(headers):
+            continue
+        row = {name: cells[position].strip() for name, position in index.items()}
+        cell = row.__getitem__
+
+        def joined(*values: str) -> str:
+            return "<br />".join(value for value in values if value)
+
+        period = "-".join(
+            value
+            for value in (
+                cell("start year"),
+                cell("start month"),
+                cell("start day"),
+            )
+            if value
+        )
+        area = joined(cell("location"), cell("regions"))
+        reported_value = " ".join(
+            value for value in (cell("value"), cell("unit")) if value
+        )
+        rendered_rows.append(
+            "<tr>"
+            f"<td>{cell('event id') or '&mdash;'}</td>"
+            f"<td>{period or '&mdash;'}</td>"
+            f"<td>{cell('disaster type') or '&mdash;'}</td>"
+            f"<td>{area or '&mdash;'}</td>"
+            f"<td>{reported_value or '&mdash;'}</td>"
+            "</tr>"
+        )
+
+    if not rendered_rows:
+        return None
+    return (
+        '<table class="emdat-table"><thead><tr>'
+        '<th width="12%">Event</th>'
+        '<th width="14%">Period</th>'
+        '<th width="16%">Hazard</th>'
+        '<th width="42%">Area</th>'
+        '<th width="16%">Reported value</th>'
+        "</tr></thead><tbody>" + "".join(rendered_rows) + "</tbody></table>"
+    )
 
 
 def _collapse_emdat_html_table(table: str, headers: list[str]) -> str | None:
@@ -732,6 +844,12 @@ def metric_path(metric: Metric) -> MetricPath:
         return "faostat"
     if metric.data_sources and all(s.source == "EMDAT" for s in metric.data_sources):
         return "emdat"
+    if metric.data_sources and all(
+        s.source == "DesInventar" for s in metric.data_sources
+    ):
+        return "desinventar"
+    if is_structured_data_only(metric):
+        return "structured"
     return "researcher"
 
 
@@ -755,6 +873,60 @@ def select_metrics(
             )
         selected.append((idx, metrics[idx - 1]))
     return selected
+
+
+_UNDRR_DATA_SOURCES = frozenset({"EMDAT", "DesInventar"})
+
+
+def undrr_metric_indices(metrics: Sequence[Metric]) -> list[int]:
+    """1-based indices for metrics that use only EM-DAT and/or DesInventar."""
+    selected: list[int] = []
+    for index, metric in enumerate(metrics, start=1):
+        if not metric.data_sources:
+            continue
+        if all(config.source in _UNDRR_DATA_SOURCES for config in metric.data_sources):
+            selected.append(index)
+    return selected
+
+
+def parse_metric_option(
+    metrics: Sequence[Metric],
+    specs: Sequence[str] | None,
+) -> list[int] | None:
+    """Parse CLI ``--metric`` values: integers and/or the ``undrr`` alias.
+
+    ``undrr`` expands to every metric whose resolved sources are only EM-DAT
+    and/or DesInventar. Returns ``None`` when ``specs`` is omitted (run all).
+    """
+    if specs is None:
+        return None
+    if not specs:
+        raise ValueError("At least one --metric value is required when provided")
+
+    indices: list[int] = []
+    seen: set[int] = set()
+    for raw in specs:
+        spec = raw.strip()
+        if not spec:
+            raise ValueError("Metric selector must not be empty")
+        if spec.casefold() == "undrr":
+            for index in undrr_metric_indices(metrics):
+                if index not in seen:
+                    seen.add(index)
+                    indices.append(index)
+            continue
+        try:
+            value = int(spec)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid metric selector {raw!r}; use a 1-based number or 'undrr'"
+            ) from exc
+        if value not in seen:
+            seen.add(value)
+            indices.append(value)
+    if not indices:
+        raise ValueError("No metrics matched the given --metric selectors")
+    return indices
 
 
 def parse_countries_iso3(raw: str) -> list[str]:
@@ -789,6 +961,8 @@ def build_metric_process_jobs(metrics: list[Metric]) -> list[MetricProcessJob]:
         "worldbank": [],
         "faostat": [],
         "emdat": [],
+        "desinventar": [],
+        "structured": [],
         "researcher": [],
     }
     for index, metric in select_metrics(metrics, None):
@@ -817,6 +991,22 @@ def build_metric_process_jobs(metrics: list[Metric]) -> list[MetricProcessJob]:
                 kind="emdat",
                 metric_indices=by_path["emdat"],
                 data_source="EMDAT",
+            )
+        )
+    if by_path["desinventar"]:
+        jobs.append(
+            MetricProcessJob(
+                kind="desinventar",
+                metric_indices=by_path["desinventar"],
+                data_source="DesInventar",
+            )
+        )
+    if by_path["structured"]:
+        jobs.append(
+            MetricProcessJob(
+                kind="structured",
+                metric_indices=by_path["structured"],
+                data_source=None,
             )
         )
     for index in by_path["researcher"]:
@@ -878,6 +1068,12 @@ def format_structured_result(
                 plot_dir=plot_dir,
                 plot_stem=f"{plot_stem}-emdat-{result_index}",
             )
+        elif isinstance(result, DesInventarDataResult):
+            section, reference = _format_desinventar_evidence(
+                result,
+                plot_dir=plot_dir,
+                plot_stem=f"{plot_stem}-desinventar-{result_index}",
+            )
         else:
             title = getattr(result, "title", None) or "Structured data result"
             url = getattr(result, "url", None) or ""
@@ -886,6 +1082,15 @@ def format_structured_result(
         sections.append(f"### Direct Evidence {result_index}\n\n{section}")
         if reference:
             references.append(reference)
+
+    comparison = _format_desinventar_emdat_comparison(
+        results,
+        plot_dir=plot_dir,
+        plot_stem=f"{plot_stem}-comparison",
+    )
+    if comparison is not None:
+        sections.append(f"### Source comparison\n\n{comparison}")
+
     body = (
         "## Direct evidence\n\n"
         + "\n\n".join(sections)
@@ -1052,6 +1257,7 @@ def _format_emdat_evidence(
 
     section_parts = [
         f"Source: {title}",
+        "Dataset: EM-DAT",
         f"Indicator: {indicator}",
         f"Source data:\n\n{table}",
     ]
@@ -1064,6 +1270,114 @@ def _format_emdat_evidence(
         f"[{title}]({url}) (EM-DAT `{indicator}`)" if url else f"EM-DAT `{indicator}`"
     )
     return section, reference
+
+
+def _format_desinventar_evidence(
+    result: DesInventarDataResult,
+    *,
+    plot_dir: Path,
+    plot_stem: str,
+) -> tuple[str, str]:
+    indicator = str(result.metadata.get("indicator") or "")
+    title = result.title or indicator or "DesInventar indicator"
+    unit = str(result.metadata.get("unit") or "")
+    if result.data.empty:
+        table = "None."
+        plot_path = None
+    else:
+        national = desinventar_national_totals_by_year(result.data)
+        plot_path = plot_time_series(
+            national,
+            title=title,
+            output_path=plot_dir / f"{plot_stem}.png",
+            default_unit=unit,
+        )
+        table_data = result.data.copy()
+        if "unit" not in table_data:
+            table_data["unit"] = unit
+        table = _dataframe_markdown_table(
+            table_data,
+            columns=(
+                "event_id",
+                "start_year",
+                "start_month",
+                "start_day",
+                "disaster_type",
+                "location",
+                "regions",
+                "value",
+                "unit",
+            ),
+        )
+
+    section_parts = [
+        f"Source: {title}",
+        "Dataset: DesInventar",
+        f"Indicator: {indicator}",
+        f"Source data:\n\n{table}",
+    ]
+    if plot_path is not None:
+        section_parts.append(f"Plot: {_plot_markdown(plot_path, title, plot_dir)}")
+    section = "\n\n".join(section_parts)
+
+    url = result.url or ""
+    reference = (
+        f"[{title}]({url}) (DesInventar `{indicator}`)"
+        if url
+        else f"DesInventar `{indicator}`"
+    )
+    return section, reference
+
+
+def _format_desinventar_emdat_comparison(
+    results: list[Any],
+    *,
+    plot_dir: Path,
+    plot_stem: str,
+) -> str | None:
+    """Overlay DesInventar and EM-DAT national yearly totals when both are present."""
+    rows: list[dict[str, Any]] = []
+    has_desinventar = False
+    has_emdat = False
+    for result in results:
+        if isinstance(result, DesInventarDataResult):
+            has_desinventar = True
+            totals = desinventar_national_totals_by_year(result.data)
+            source_label = "DesInventar"
+        elif isinstance(result, EmDatDataResult):
+            has_emdat = True
+            totals = national_totals_by_year(result.data)
+            source_label = "EM-DAT"
+        else:
+            continue
+        indicator = str(result.metadata.get("indicator") or result.title or "indicator")
+        unit = str(result.metadata.get("unit") or "")
+        series = f"{source_label}: {indicator}"
+        for year, value in totals[["year", "value"]].itertuples(index=False, name=None):
+            if year is None or pd.isna(year) or value is None or pd.isna(value):
+                continue
+            rows.append(
+                {
+                    "year": int(year),
+                    "value": float(value),
+                    "series": series,
+                    "unit": unit,
+                }
+            )
+    if not has_desinventar or not has_emdat or not rows:
+        return None
+
+    frame = pd.DataFrame(rows)
+    title = "DesInventar vs EM-DAT"
+    plot_path = plot_comparison_time_series(
+        frame,
+        title=title,
+        output_path=plot_dir / f"{plot_stem}.png",
+        series_column="series",
+    )
+    if plot_path is None:
+        return None
+    return f"Plot: {_plot_markdown(plot_path, title, plot_dir)}"
 
 
 def _dataframe_markdown_table(
@@ -1086,7 +1400,7 @@ def _dataframe_markdown_table(
 
 
 def _column_heading(column: str) -> str:
-    special = {"dis_no": "DisNo.", "value_raw": "Value raw"}
+    special = {"dis_no": "DisNo.", "event_id": "Event Id", "value_raw": "Value raw"}
     return special.get(column, column.replace("_", " ").title())
 
 

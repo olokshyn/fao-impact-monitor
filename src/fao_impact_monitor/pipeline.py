@@ -10,7 +10,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 
@@ -20,16 +20,21 @@ from fao_impact_monitor.agent.researcher_agent import (
     format_human_markdown,
     research,
 )
+from fao_impact_monitor.agent.undrr_summarizer_agent import summarize_undrr
 from fao_impact_monitor.config import get_config
 from fao_impact_monitor.data_lake.mongo import connect_data_lake
 from fao_impact_monitor.data_lake.vectorstore import VectorStore
 from fao_impact_monitor.data_source import get_data_source
 from fao_impact_monitor.data_source.tellus import TellusDataSource
 from fao_impact_monitor.impact_report import (
+    append_undrr_source_tables,
     default_impact_analysis_md_path,
+    default_undrr_report_md_path,
     enrich_structured_latest_values,
+    filter_undrr_reports,
     parse_metric_report_directory,
     write_impact_analysis_files,
+    write_undrr_report_files,
 )
 from fao_impact_monitor.metric.metric import Metric
 from fao_impact_monitor.pdf_pipeline.mongo import connect_pdf_pipeline
@@ -54,7 +59,10 @@ from fao_impact_monitor.research_report import (
     metric_report_path,
     missing_researcher_process_jobs,
     parse_countries_iso3,
+    parse_metric_option,
     select_metrics,
+    use_case_data_filter,
+    use_case_display_name,
     write_metric_report,
 )
 
@@ -132,6 +140,7 @@ async def _run_one_metric(
     vector_store: ResearchVectorStore | None,
     semaphore: asyncio.Semaphore,
     web_research_enabled: bool = True,
+    data_source: str | None = None,
 ) -> Path:
     """Run one metric and write ``output_dir/{index:04d}.md``."""
     async with semaphore:
@@ -146,13 +155,25 @@ async def _run_one_metric(
             path,
             report_path,
         )
-        if path in {"worldbank", "faostat", "emdat"}:
-            source_names = ", ".join(
-                dict.fromkeys(config.source for config in metric.data_sources)
-            )
+        if path in {
+            "worldbank",
+            "faostat",
+            "emdat",
+            "desinventar",
+            "structured",
+        }:
+            configs = list(metric.data_sources)
+            if data_source is not None:
+                source_key = data_source.casefold()
+                configs = [
+                    config
+                    for config in configs
+                    if config.source.casefold() == source_key
+                ]
+            source_names = ", ".join(dict.fromkeys(config.source for config in configs))
             typer.echo(f"[{position}/{total}] {source_names}: {metric.name}")
             all_results: list[Any] = []
-            for config in metric.data_sources:
+            for config in configs:
                 source = get_data_source(config.source)
                 results = await source.get_data(metric, config, country_iso3)
                 all_results.extend(results)
@@ -235,14 +256,12 @@ async def _run_research(
             (index, metric)
             for index, metric in selected
             if metric.data_sources
-            and all(
+            and any(
                 config.source.casefold() == source_key for config in metric.data_sources
             )
         ]
         if not selected:
-            raise typer.BadParameter(
-                f"No metrics use only the {data_source!r} data source"
-            )
+            raise typer.BadParameter(f"No metrics use the {data_source!r} data source")
 
     structured_count = sum(
         1 for _, metric in selected if metric_path(metric) != "researcher"
@@ -297,6 +316,7 @@ async def _run_research(
                 vector_store=vector_store,
                 semaphore=semaphore,
                 web_research_enabled=web_research_enabled,
+                data_source=data_source,
             )
             for position, (index, metric) in enumerate(selected, start=1)
         ]
@@ -373,6 +393,7 @@ def _run_research_parallel(
     output_root: Path,
     jobs: list[MetricProcessJob] | None = None,
     continue_incomplete: bool = False,
+    metric_indices: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Spawn one process per (country, metric-process-job) pair."""
     metrics = Metric.from_use_case(use_case_path)
@@ -382,6 +403,17 @@ def _run_research_parallel(
     shared_jobs: list[MetricProcessJob] | None = None
     if not continue_incomplete:
         shared_jobs = jobs if jobs is not None else build_metric_process_jobs(metrics)
+        if metric_indices is not None:
+            allowed = set(metric_indices)
+            shared_jobs = [
+                MetricProcessJob(
+                    kind=job.kind,
+                    metric_indices=[i for i in job.metric_indices if i in allowed],
+                    data_source=job.data_source,
+                )
+                for job in shared_jobs
+            ]
+            shared_jobs = [job for job in shared_jobs if job.metric_indices]
         if not shared_jobs:
             raise typer.BadParameter(f"No metrics found in use-case {use_case_path}")
 
@@ -598,16 +630,26 @@ def tellus(
 @app.command("research")
 def research_command(
     country: Annotated[
-        str,
-        typer.Option("--country", help="ISO3 country code to research."),
-    ],
+        str | None,
+        typer.Option(
+            "--country",
+            help="ISO3 country code to research (use --countries for several).",
+        ),
+    ] = None,
+    countries: Annotated[
+        str | None,
+        typer.Option(
+            "--countries",
+            help="Comma-separated ISO3 country codes (e.g. ETH,KEN,MWI).",
+        ),
+    ] = None,
     metric: Annotated[
-        list[int] | None,
+        list[str] | None,
         typer.Option(
             "--metric",
             help=(
-                "1-based metric number to run (repeatable). "
-                "When omitted, run all metrics."
+                "1-based metric number to run (repeatable), or 'undrr' for all "
+                "EM-DAT / DesInventar metrics. When omitted, run all metrics."
             ),
         ),
     ] = None,
@@ -616,8 +658,9 @@ def research_command(
         typer.Option(
             "--source",
             help=(
-                "Run only metrics whose resolved data sources all match this name "
-                "(for example, FAOSTAT)."
+                "Run only metrics whose resolved data sources include this name, "
+                "and fetch only that source (for example, FAOSTAT, emdat, "
+                "desinventar)."
             ),
         ),
     ] = None,
@@ -638,9 +681,9 @@ def research_command(
         typer.Option(
             "--output",
             help=(
-                "Directory for per-metric markdown reports "
+                "Directory for per-metric markdown reports when using --country "
                 "(default: reports/<USE_CASE>/<COUNTRY>/). "
-                "Each metric is written as {metric_index:04d}.md."
+                "Ignored with --countries (uses reports/<USE_CASE>/<COUNTRY>/)."
             ),
             path_type=Path,
         ),
@@ -656,19 +699,41 @@ def research_command(
 ) -> None:
     """Run structured sources and/or ResearcherAgent; write markdown reports."""
     _configure_logging()
-    country_iso3 = country.upper()
-    output_dir = output or default_research_dir(country_iso3, use_case=use_case)
-    asyncio.run(
-        _run_research(
-            use_case_path=use_case,
-            country_iso3=country_iso3,
-            metric_indices=metric,
-            output_dir=output_dir,
-            max_parallel=max_parallel,
-            use_pdf_vector_store=True,
-            data_source=source,
+    if country and countries:
+        raise typer.BadParameter("Use --country or --countries, not both")
+    if not country and not countries:
+        raise typer.BadParameter("Provide --country or --countries")
+    try:
+        countries_iso3 = (
+            [country.upper()] if country else parse_countries_iso3(cast(str, countries))
         )
-    )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    metrics = Metric.from_use_case(use_case)
+    try:
+        metric_indices = parse_metric_option(metrics, metric)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    async def _run_all() -> None:
+        for country_iso3 in countries_iso3:
+            output_dir = (
+                output
+                if output is not None and len(countries_iso3) == 1
+                else default_research_dir(country_iso3, use_case=use_case)
+            )
+            await _run_research(
+                use_case_path=use_case,
+                country_iso3=country_iso3,
+                metric_indices=metric_indices,
+                output_dir=output_dir,
+                max_parallel=max_parallel,
+                use_pdf_vector_store=True,
+                data_source=source,
+            )
+
+    asyncio.run(_run_all())
 
 
 @app.command("research-parallel")
@@ -680,6 +745,16 @@ def research_parallel_command(
             help="Comma-separated ISO3 country codes (e.g. ETH,KEN,MWI).",
         ),
     ],
+    metric: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--metric",
+            help=(
+                "1-based metric number to run (repeatable), or 'undrr' for all "
+                "EM-DAT / DesInventar metrics. When omitted, run all metrics."
+            ),
+        ),
+    ] = None,
     use_case: Annotated[
         Path,
         typer.Option(
@@ -710,8 +785,9 @@ def research_parallel_command(
             "--continue",
             help=(
                 "Run only researcher (text) metrics that do not yet have a "
-                "report file. Skips World Bank, FAOSTAT, and EM-DAT, and "
-                "spawns processes only for the missing text metrics."
+                "report file. Skips World Bank, FAOSTAT, EM-DAT, and "
+                "DesInventar, and spawns processes only for the missing "
+                "text metrics."
             ),
         ),
     ] = False,
@@ -722,11 +798,17 @@ def research_parallel_command(
         countries_iso3 = parse_countries_iso3(countries)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+    metrics = Metric.from_use_case(use_case)
+    try:
+        metric_indices = parse_metric_option(metrics, metric)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     results = _run_research_parallel(
         use_case_path=use_case,
         countries_iso3=countries_iso3,
         output_root=output_root,
         continue_incomplete=continue_incomplete,
+        metric_indices=metric_indices,
     )
     failed = [result for result in results if not result["ok"]]
     typer.echo(
@@ -940,6 +1022,121 @@ def impact_report_command(
     try:
         written = asyncio.run(
             _run_impact_report(
+                use_case_path=use_case,
+                countries_iso3=countries_iso3,
+                input_root=input_root,
+                output_root=output_root,
+            )
+        )
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Wrote {len(written)} file(s) under: {output_root / use_case.stem}")
+
+
+async def _run_undrr_report(
+    *,
+    use_case_path: Path,
+    countries_iso3: list[str],
+    input_root: Path,
+    output_root: Path,
+) -> list[Path]:
+    """Parse EM-DAT/DesInventar metric reports and write UNDRR markdown + PDF."""
+    use_case_name = use_case_display_name(use_case_path)
+    data_filter = use_case_data_filter(use_case_path)
+    written: list[Path] = []
+    failures: list[str] = []
+    for country_iso3 in countries_iso3:
+        iso3 = country_iso3.upper()
+        input_dir = input_root / use_case_path.stem / iso3
+        output_md = default_undrr_report_md_path(
+            iso3, use_case=use_case_path, output_root=output_root
+        )
+        try:
+            reports = parse_metric_report_directory(input_dir)
+            undrr_reports = filter_undrr_reports(reports, use_case_path=use_case_path)
+            if not undrr_reports:
+                raise ValueError(
+                    f"No EM-DAT/DesInventar metric reports found under {input_dir}"
+                )
+            output = await summarize_undrr(
+                country_iso3=iso3,
+                reports=undrr_reports,
+                use_case_name=use_case_name,
+                data_filter=data_filter,
+            )
+            markdown = append_undrr_source_tables(output.markdown, undrr_reports)
+            md_path, pdf_path = write_undrr_report_files(
+                markdown_text=markdown,
+                output_md=output_md,
+            )
+        except Exception as exc:
+            logger.exception("UNDRR report failed for %s", iso3)
+            failures.append(f"{iso3}: {exc}")
+            typer.echo(f"FAILED {iso3}: {exc}", err=True)
+            continue
+        written.extend([md_path, pdf_path])
+        typer.echo(f"Wrote UNDRR report: {md_path}")
+        typer.echo(f"Wrote UNDRR PDF: {pdf_path}")
+    if failures:
+        raise RuntimeError("UNDRR report failed for " + "; ".join(failures))
+    return written
+
+
+@app.command("undrr-report")
+def undrr_report_command(
+    countries: Annotated[
+        str,
+        typer.Option(
+            "--countries",
+            help="Comma-separated ISO3 country codes (e.g. ETH,KEN,MWI).",
+        ),
+    ],
+    use_case: Annotated[
+        Path,
+        typer.Option(
+            "--use-case",
+            help="Path to use-case JSON with metrics and default data_sources.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            path_type=Path,
+        ),
+    ] = _DEFAULT_USE_CASE,
+    input_root: Annotated[
+        Path,
+        typer.Option(
+            "--input-root",
+            help=(
+                "Root directory containing per-country metric reports "
+                "(default: reports/; reads <root>/<USE_CASE>/<COUNTRY>/)."
+            ),
+            path_type=Path,
+        ),
+    ] = Path("reports"),
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help=(
+                "Root directory for <ISO3> UNDRR <name>.md/.pdf "
+                "(default: reports/; writes <root>/<USE_CASE>/<COUNTRY>/)."
+            ),
+            path_type=Path,
+        ),
+    ] = Path("reports"),
+) -> None:
+    """Compile cited UNDRR summaries from EM-DAT / DesInventar metric reports."""
+    _configure_logging()
+    try:
+        countries_iso3 = parse_countries_iso3(countries)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    try:
+        written = asyncio.run(
+            _run_undrr_report(
                 use_case_path=use_case,
                 countries_iso3=countries_iso3,
                 input_root=input_root,

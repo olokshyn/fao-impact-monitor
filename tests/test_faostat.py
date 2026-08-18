@@ -457,14 +457,12 @@ def test_downloaded_el_nino_final_metrics_return_faostat_data_for_kenya() -> Non
         for index, metric in enumerate(metrics)
         if metric.name == "Irrigated cropland"
     )
-    emdat_index = next(
-        index
-        for index, metric in enumerate(metrics)
-        if metric.name == "Deaths and missing persons"
+    cropland_index = next(
+        index for index, metric in enumerate(metrics) if metric.name == "Cropland"
     )
     source = FAOSTAT()
 
-    for metric in metrics[irrigated_index:emdat_index]:
+    for metric in metrics[irrigated_index:cropland_index]:
         assert metric.data_sources
         assert all(config.source == "FAOSTAT" for config in metric.data_sources)
         results: list[FAOSTATDataResult] = []

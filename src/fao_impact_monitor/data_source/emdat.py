@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from threading import Lock
 from typing import Any, Final
@@ -13,6 +14,8 @@ from fao_impact_monitor.metric.metric import Metric
 
 from .data_source import DataResult, DataSource
 from .data_source_config import DataSourceConfig
+
+logger = logging.getLogger(__name__)
 
 EMDAT_URL: Final = "https://www.emdat.be"
 EMDAT_DATA_SHEET: Final = "EM-DAT Data"
@@ -113,7 +116,8 @@ class EMDAT(DataSource):
             )
         data_path = config.data_path
         if not data_path.is_file():
-            raise FileNotFoundError(f"EM-DAT workbook not found: {data_path}")
+            logger.warning("EM-DAT workbook not found: %s", data_path)
+            return []
 
         workbook = self._load_workbook(data_path)
         if config.indicator not in workbook.columns:

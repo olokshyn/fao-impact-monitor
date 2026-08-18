@@ -231,8 +231,7 @@ def test_emdat_unknown_indicator_and_missing_file(tmp_path: Path) -> None:
         asyncio.run(EMDAT().get_data(_metric(bad), bad, "KEN"))
 
     missing = _config(tmp_path / "missing.xlsx")
-    with pytest.raises(FileNotFoundError, match="EM-DAT workbook not found"):
-        asyncio.run(EMDAT().get_data(_metric(missing), missing, "KEN"))
+    assert asyncio.run(EMDAT().get_data(_metric(missing), missing, "KEN")) == []
 
 
 def test_emdat_metric_path() -> None:
@@ -246,15 +245,40 @@ def test_emdat_metric_path() -> None:
 
 def test_el_nino_emdat_metrics_configured() -> None:
     metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
-    emdat = [metric for metric in metrics if metric_path(metric) == "emdat"]
-    assert [metric.name for metric in emdat] == [
-        "Deaths and missing persons",
-        "People affected, injured and requiring assistance",
-        "Displaced, evacuated and relocated people",
-        "Housing damaged and destroyed",
+    by_name = {metric.name: metric for metric in metrics}
+
+    deaths = by_name["Deaths and missing persons"]
+    assert any(config.source == "EMDAT" for config in deaths.data_sources)
+    assert deaths.data_sources[-1].model_dump()["indicator"] == "Total Deaths"
+
+    affected = by_name["People affected, injured and requiring assistance"]
+    assert [config.source for config in affected.data_sources[:3]] == [
+        "EMDAT",
+        "EMDAT",
+        "EMDAT",
     ]
-    housing = emdat[-1]
-    assert [config.model_dump()["indicator"] for config in housing.data_sources] == [
+    assert [
+        config.model_dump()["indicator"] for config in affected.data_sources[:3]
+    ] == [
+        "No. Injured",
+        "No. Affected",
+        "Total Affected",
+    ]
+
+    displaced = by_name["Displaced, evacuated and relocated people"]
+    assert any(
+        config.source == "EMDAT"
+        and config.model_dump().get("indicator") == "No. Homeless"
+        for config in displaced.data_sources
+    )
+
+    housing = by_name["Housing damaged and destroyed"]
+    emdat_indicators = [
+        config.model_dump()["indicator"]
+        for config in housing.data_sources
+        if config.source == "EMDAT"
+    ]
+    assert emdat_indicators == [
         "No. Homeless",
         "Reconstruction Costs, Adjusted ('000 US$)",
         "Insured Damage, Adjusted ('000 US$)",

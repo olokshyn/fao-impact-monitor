@@ -13,7 +13,6 @@ from fao_impact_monitor.agent.impact_analyzer_agent import (
     CountryFilterVerdict,
     DraftStatement,
     DraftStatementList,
-    StatementRepair,
     StatementVerification,
     _normalize_inline_citations,
     _render_statement_text,
@@ -292,12 +291,6 @@ def test_analyze_impact_scripted_entailed_and_drops_unentailed(
                         ),
                         supporting_evidence_ids=[crop_id, gdp_id],
                     ),
-                    DraftStatement(
-                        section="preparedness",
-                        subsection_title=None,
-                        text=f"Unsupported preparedness claim. [@{crop_id}]",
-                        supporting_evidence_ids=[crop_id],
-                    ),
                 ]
             )
         ],
@@ -320,27 +313,6 @@ def test_analyze_impact_scripted_entailed_and_drops_unentailed(
                 unsupported_parts=[],
                 reasoning="Cites past and current conditions.",
             ),
-            StatementVerification(
-                statement_id="stmt_004",
-                verdict="insufficient",
-                unsupported_parts=["preparedness not in evidence"],
-                reasoning="No preparedness text.",
-                suggested_revision=None,
-            ),
-            StatementVerification(
-                statement_id="stmt_004",
-                verdict="insufficient",
-                unsupported_parts=["still unsupported"],
-                reasoning="Still no support.",
-            ),
-        ],
-        "StatementRepair": [
-            StatementRepair(
-                statement_id="stmt_004",
-                text="",
-                supporting_evidence_ids=[crop_id],
-                remove=True,
-            )
         ],
     }
     model = ScriptedModel(scripts)

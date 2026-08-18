@@ -173,6 +173,21 @@ class ImpactAnalyzerConfig(BaseSettings):
     risk_plot_detail: str = "high"
 
 
+class UndrrSummarizerConfig(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="UNDRR_SUMMARIZER_",
+        **_COMMON_SETTINGS,
+    )
+
+    llm_model: str = "openai:openai.gpt-5.6-sol"
+    verifier_llm_model: str = "openai:openai.gpt-5.6-luna"
+    reasoning_effort: str = "high"
+    max_answer_verification_retries: int = 1
+    verify_concurrency: int = 6
+    max_source_text_chars: int = 4_000
+    default_plot_detail: str = "low"
+
+
 class TellusConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TELLUS_",
@@ -246,6 +261,9 @@ class Config(BaseSettings):
     query_generator: QueryGeneratorConfig = Field(default_factory=QueryGeneratorConfig)
     researcher: ResearcherConfig = Field(default_factory=ResearcherConfig)
     impact_analyzer: ImpactAnalyzerConfig = Field(default_factory=ImpactAnalyzerConfig)
+    undrr_summarizer: UndrrSummarizerConfig = Field(
+        default_factory=UndrrSummarizerConfig
+    )
     tellus: TellusConfig = Field(default_factory=TellusConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
     mongo: MongoConfig = Field(default_factory=MongoConfig)

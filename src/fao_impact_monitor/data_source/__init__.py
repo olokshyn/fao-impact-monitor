@@ -4,6 +4,11 @@ from .data_source import DataResult, DataSource, get_data_source
 from .data_source_config import DataSourceConfig
 
 if TYPE_CHECKING:
+    from .desinventar import (
+        DesInventar,
+        DesInventarDataResult,
+        DesInventarDataSourceConfig,
+    )
     from .emdat import EMDAT, EmDatDataResult, EmDatDataSourceConfig
     from .fao_repository import (
         FaoRepository,
@@ -20,6 +25,9 @@ __all__ = [
     "DataResult",
     "DataSource",
     "DataSourceConfig",
+    "DesInventar",
+    "DesInventarDataResult",
+    "DesInventarDataSourceConfig",
     "EmDatDataResult",
     "EmDatDataSourceConfig",
     "FAOSTATDataResult",
@@ -35,6 +43,9 @@ __all__ = [
 ]
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {
+    "DesInventar": (".desinventar", "DesInventar"),
+    "DesInventarDataResult": (".desinventar", "DesInventarDataResult"),
+    "DesInventarDataSourceConfig": (".desinventar", "DesInventarDataSourceConfig"),
     "EMDAT": (".emdat", "EMDAT"),
     "EmDatDataResult": (".emdat", "EmDatDataResult"),
     "EmDatDataSourceConfig": (".emdat", "EmDatDataSourceConfig"),

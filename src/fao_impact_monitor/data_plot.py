@@ -73,6 +73,112 @@ def plot_time_series(
     return output_path
 
 
+def plot_comparison_time_series(
+    data: pd.DataFrame,
+    *,
+    title: str,
+    output_path: Path,
+    series_column: str = "series",
+    default_unit: str = "",
+) -> Path | None:
+    """Overlay multiple named series on shared axes with a legend."""
+    if not {"year", "value", series_column}.issubset(data.columns):
+        return None
+
+    frame = data.dropna(subset=["year", "value", series_column]).copy()
+    if frame.empty:
+        return None
+    frame["year"] = frame["year"].astype(int)
+    frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+    frame = frame.dropna(subset=["value"])
+    if frame.empty:
+        return None
+
+    series_names = list(dict.fromkeys(frame[series_column].astype(str).tolist()))
+    if not series_names:
+        return None
+
+    units = (
+        frame["unit"].dropna().astype(str).unique().tolist()
+        if "unit" in frame.columns
+        else []
+    )
+    unit = units[0] if len(units) == 1 else default_unit
+    if len(units) > 1:
+        # Different units: one panel per unit with overlaid series.
+        panels: list[tuple[str, pd.DataFrame]] = []
+        for unit_name, unit_frame in frame.groupby("unit", dropna=False, sort=True):
+            panels.append((_label_value(unit_name) or default_unit, unit_frame))
+    else:
+        panels = [(unit, frame)]
+
+    if len(panels) > _MAX_PANELS:
+        return None
+
+    figure_width = 10.5
+    figure_height = 3.5 * len(panels) + 0.7
+    figure, axes = plt.subplots(
+        len(panels),
+        1,
+        figsize=(figure_width, figure_height),
+        squeeze=False,
+        layout="constrained",
+    )
+    figure.patch.set_facecolor("white")
+    figure.suptitle(title, fontsize=16, fontweight="bold", color="#253238")
+
+    for panel_index, ((panel_unit, panel_frame), axis) in enumerate(
+        zip(panels, axes.flat, strict=True)
+    ):
+        years_all: list[int] = []
+        for series_index, series_name in enumerate(series_names):
+            series = panel_frame[panel_frame[series_column].astype(str) == series_name]
+            if series.empty:
+                continue
+            ordered = series.sort_values("year")
+            years = ordered["year"].astype(int).tolist()
+            values = ordered["value"].astype(float).tolist()
+            years_all.extend(years)
+            color = _FAO_COLORS[series_index % len(_FAO_COLORS)]
+            axis.plot(
+                years,
+                values,
+                color=color,
+                linewidth=2.4,
+                marker="o",
+                markersize=6,
+                markeredgecolor="white",
+                markeredgewidth=1.2,
+                label=series_name,
+            )
+        if not years_all:
+            continue
+        unique_years = sorted(set(years_all))
+        axis.grid(axis="y", color="#DCE3E7", linewidth=0.8)
+        axis.set_axisbelow(True)
+        axis.spines[["top", "right"]].set_visible(False)
+        axis.spines[["left", "bottom"]].set_color("#AAB7BE")
+        axis.tick_params(colors="#4A5A61", labelsize=9)
+        axis.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: _format_value(value))
+        )
+        axis.set_xticks(unique_years)
+        axis.set_xticklabels(
+            [str(year) for year in unique_years], rotation=45, ha="right"
+        )
+        axis.set_xlabel("Year", color="#4A5A61", fontweight="semibold")
+        axis.set_ylabel(panel_unit or "Value", color="#4A5A61", fontweight="semibold")
+        if len(panels) > 1 and panel_unit:
+            axis.set_title(panel_unit, loc="left", fontsize=11, fontweight="semibold")
+        axis.legend(loc="best", fontsize=9, frameon=False)
+        axis.margins(x=0.035, y=0.2)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, dpi=180, facecolor="white", bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
 def _series_groups(
     frame: pd.DataFrame,
     series_columns: tuple[str, ...],
