@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import struct
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -31,14 +33,29 @@ def _test_config(**overrides: Any) -> ImpactAnalyzerConfig:
     return ImpactAnalyzerConfig(verify_concurrency=1, **overrides)
 
 
-def _tiny_png(path: Path) -> Path:
-    data = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
-        b"\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+def _tiny_png(path: Path, *, size: int = 128) -> Path:
+    """Write a solid RGB PNG large enough for Bedrock/OpenAI vision APIs.
+
+    A 1x1 PNG is a valid file but is rejected as an unsupported image format.
+    """
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    row = b"\x00" + b"\x11\x6a\xab" * size
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(row * size, 9))
+        + chunk(b"IEND", b"")
+    )
     return path
 
 

@@ -1,4 +1,4 @@
-"""Gemini 3.6 Flash calls used for visual PDF interpretation and verification."""
+"""Gemini 3.7 Flash calls used for visual PDF interpretation and verification."""
 
 from __future__ import annotations
 

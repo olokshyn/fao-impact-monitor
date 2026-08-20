@@ -78,7 +78,7 @@ class GeminiConfig(BaseSettings):
     model_config = SettingsConfigDict(**_COMMON_SETTINGS)
 
     api_key: SecretStr = Field(default=SecretStr(""), validation_alias="GEMINI_API_KEY")
-    model: str = "gemini-3.6-flash"
+    model: str = "gemini-3.7-flash"
     request_timeout_seconds: int = Field(default=120, ge=10)
 
 
