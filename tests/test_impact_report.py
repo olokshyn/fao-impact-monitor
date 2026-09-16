@@ -49,7 +49,7 @@ def test_undrr_report_paths_ascii_fold_use_case_name() -> None:
     assert md.parent.name == "ETH"
 
 
-def test_undrr_metric_seq_numbers_are_emdat_desinventar_only() -> None:
+def test_undrr_metric_seq_numbers_use_undrr_tag() -> None:
     selected = undrr_metric_seq_numbers("use-cases/el-nino.json")
     assert selected == {26, 27, 28, 29, 30, 31}
 
@@ -304,6 +304,88 @@ Some regions reported crop losses of 50% to 90%. [1]
     assert web_ref == (
         "[https://fews.net/east-africa/ethiopia](https://fews.net/east-africa/ethiopia)"
     )
+
+
+def test_scraped_markdown_images_are_not_plots(tmp_path: Path) -> None:
+    report = _write(
+        tmp_path / "0016.md",
+        """## Metric info
+
+Seq Number: 16
+
+Name: Crop yield loss
+
+Description: Crop yield loss
+
+Example: Example
+
+Unit: %
+
+## Direct evidence
+
+### Direct Evidence 1
+
+Source: https://www.fao.org/4/x1101e/x1101e00.htm
+
+Source title: FAO/GIEWS Special report on Nicaragua, 5 February 1999
+
+Source text:
+
+```
+# SPECIAL REPORT
+![](blubvsps.gif)
+Losses incurred represent about 35 percent of expected output.
+```
+
+## Indirect evidence
+
+None.
+""",
+    )
+    parsed = parse_metric_report_file(report)
+    evidence = parsed.direct[0]
+    assert evidence.plot_path is None
+    assert evidence.source_type == "web"
+
+
+def test_unfenced_scraped_image_is_not_a_plot(tmp_path: Path) -> None:
+    report = _write(
+        tmp_path / "0016.md",
+        """## Metric info
+
+Seq Number: 16
+
+Name: Crop yield loss
+
+Description: Crop yield loss
+
+Example: Example
+
+Unit: %
+
+## Direct evidence
+
+### Direct Evidence 1
+
+Source: https://www.fao.org/4/x1101e/x1101e00.htm
+
+Source title: FAO/GIEWS Special report on Nicaragua, 5 February 1999
+
+Source text:
+
+```
+![](blubvsps.gif)
+truncated without a closing fence
+
+## Indirect evidence
+
+None.
+""",
+    )
+    parsed = parse_metric_report_file(report)
+    evidence = parsed.direct[0]
+    assert evidence.plot_path is None
+    assert evidence.source_type == "web"
 
 
 def test_missing_plot_raises(tmp_path: Path) -> None:

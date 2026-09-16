@@ -77,6 +77,8 @@ def test_from_use_case_loads_el_nino_metrics() -> None:
     assert len(gdp.data_sources) == 1
     assert gdp.data_sources[0].source == "WorldBank"
     assert gdp.data_sources[0].exclusive is True
+    assert "structured" in gdp.tags
+    assert "worldbank" in gdp.tags
 
     labour = by_name["Agriculture share of Labour"]
     assert [s.source for s in labour.data_sources] == ["WorldBank"]
@@ -84,10 +86,17 @@ def test_from_use_case_loads_el_nino_metrics() -> None:
     cropland = by_name["Cropland"]
     assert len(cropland.data_sources) == 3
     assert all(s.source == "FAORepository" for s in cropland.data_sources)
+    assert cropland.tags == ["fao_repo"]
 
     hazards = by_name["Subsequent hazards"]
     assert hazards.unit == ""
     assert len(hazards.data_sources) == 3
+
+    deaths = by_name["Deaths and missing persons"]
+    assert "structured" in deaths.tags
+    assert "undrr" in deaths.tags
+    assert "emdat" in deaths.tags
+    assert "desinventar" in deaths.tags
 
 
 def test_from_use_case_requires_metrics_list(tmp_path: Path) -> None:

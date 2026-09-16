@@ -174,6 +174,33 @@ def test_visual_search_hit_uses_crop_artifact_path(
     )
 
 
+def test_bundle_appends_visual_facts_missing_from_canonical() -> None:
+    unit = EvidenceUnit.model_construct(
+        evidence_id="e-visual",
+        canonical_evidence_text="[TARGET SOURCE EVIDENCE | physical page 25]\nNone.",
+        physical_pages=[25],
+        printed_pages=["22"],
+        scope_evidence_ids=[],
+        continuation_evidence_ids=[],
+        verified_visual_facts=[
+            VerifiedVisualFact(
+                fact_id="fact-india",
+                text=(
+                    "India: Wheat 5-yr avg=111.8, 2026=120.2, Change 2026/2025=-1.2%"
+                ),
+                supporting_region_ids=["r1"],
+                verifier_verdict="entailed",
+                verifier_model="test",
+                verifier_prompt_version="v1",
+            )
+        ],
+    )
+    store = PdfEvidenceVectorStore()
+    bundled = asyncio.run(store._bundle(unit))
+    assert "India: Wheat 5-yr avg=111.8" in bundled
+    assert "[VERIFIED VISUAL FACT | physical page 25 | printed page 22" in bundled
+
+
 def test_search_embeddings_returns_raw_representations_without_deduplication() -> None:
     rows: list[dict[str, Any]] = [
         {"owner_id": "e1", "representation_kind": "evidence_source_text"},

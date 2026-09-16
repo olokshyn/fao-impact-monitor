@@ -30,6 +30,7 @@ class Metric(BaseModel):
     description: str
     example: str
     unit: str = ""
+    tags: list[str] = Field(default_factory=list)
     data_sources: list[DataSourceConfig] = Field(default_factory=list)
 
     @classmethod

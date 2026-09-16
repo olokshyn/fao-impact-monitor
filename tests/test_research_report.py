@@ -23,13 +23,13 @@ from fao_impact_monitor.data_source.faostat import FAOSTATDataResult
 from fao_impact_monitor.data_source.world_bank import WorldBankDataResult
 from fao_impact_monitor.metric.metric import Metric
 from fao_impact_monitor.research_report import (
-    build_metric_process_jobs,
     build_report,
     build_research_pdf,
     combine_metric_reports,
     default_research_dir,
     default_research_pdf_path,
     ensure_research_output_dir,
+    filter_missing_metric_indices,
     format_metric_section,
     format_queries_section,
     format_researcher_result,
@@ -41,10 +41,11 @@ from fao_impact_monitor.research_report import (
     metric_human_report_path,
     metric_path,
     metric_report_path,
-    missing_researcher_process_jobs,
     parse_countries_iso3,
     parse_metric_option,
+    parse_tags_option,
     report_pdf_filename,
+    resolve_metric_indices,
     select_metrics,
     undrr_metric_indices,
     write_metric_report,
@@ -107,15 +108,33 @@ def test_select_metrics_rejects_out_of_range() -> None:
         select_metrics(metrics, [2])
 
 
-def test_parse_metric_option_undrr_and_numbers() -> None:
+def test_parse_metric_option_numbers_only() -> None:
     metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
-    undrr = undrr_metric_indices(metrics)
-    assert undrr == [26, 27, 28, 29, 30, 31]
-    assert parse_metric_option(metrics, ["undrr"]) == undrr
-    assert parse_metric_option(metrics, ["3", "undrr", "3"]) == [3, *undrr]
+    assert parse_metric_option(metrics, ["3", "5", "3"]) == [3, 5]
     assert parse_metric_option(metrics, None) is None
     with pytest.raises(ValueError, match="Invalid metric selector"):
-        parse_metric_option(metrics, ["nope"])
+        parse_metric_option(metrics, ["undrr"])
+    with pytest.raises(ValueError, match="out of range"):
+        parse_metric_option(metrics, ["999"])
+
+
+def test_undrr_metric_indices_use_tags() -> None:
+    metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
+    assert undrr_metric_indices(metrics) == [26, 27, 28, 29, 30, 31]
+    assert all("undrr" in metrics[i - 1].tags for i in undrr_metric_indices(metrics))
+
+
+def test_parse_tags_and_resolve_metric_indices() -> None:
+    metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
+    assert parse_tags_option("structured, faostat") == ["structured", "faostat"]
+    assert resolve_metric_indices(metrics, tags=["faostat"]) == list(range(3, 14))
+    assert resolve_metric_indices(metrics, tags=["undrr"]) == [26, 27, 28, 29, 30, 31]
+    assert resolve_metric_indices(metrics, tags=["fao_repo"]) == list(range(14, 26))
+    assert resolve_metric_indices(
+        metrics, metric_specs=["3", "14", "26"], tags=["structured"]
+    ) == [3, 26]
+    with pytest.raises(ValueError, match="No metrics matched tags"):
+        resolve_metric_indices(metrics, tags=["nope"])
 
 
 def test_parse_countries_iso3() -> None:
@@ -125,7 +144,7 @@ def test_parse_countries_iso3() -> None:
         parse_countries_iso3(" ,  ")
 
 
-def test_build_metric_process_jobs_mixed() -> None:
+def test_filter_missing_metric_indices(tmp_path: Path) -> None:
     metrics = [
         _metric(
             name="WB",
@@ -155,110 +174,21 @@ def test_build_metric_process_jobs_mixed() -> None:
                 )
             ],
         ),
-        _metric(
-            name="FAO",
-            sources=[DataSourceConfig(source="FAOSTAT", exclusive=True)],
-        ),
-        _metric(
-            name="EM",
-            sources=[
-                DataSourceConfig.model_validate(
-                    {"source": "EMDAT", "indicator": "Total Deaths", "exclusive": True}
-                )
-            ],
-        ),
     ]
-    jobs = build_metric_process_jobs(metrics)
-    assert [(job.kind, job.metric_indices, job.data_source) for job in jobs] == [
-        ("worldbank", [1], "WorldBank"),
-        ("faostat", [4], "FAOSTAT"),
-        ("emdat", [5], "EMDAT"),
-        ("researcher", [2], None),
-        ("researcher", [3], None),
-    ]
-
-
-def test_build_metric_process_jobs_el_nino() -> None:
-    metrics = Metric.from_use_case(Path("use-cases/el-nino.json"))
-    jobs = build_metric_process_jobs(metrics)
-    assert len(jobs) == 16
-    assert jobs[0].kind == "worldbank"
-    assert jobs[0].metric_indices == [1, 2]
-    assert jobs[1].kind == "faostat"
-    assert jobs[1].metric_indices == list(range(3, 14))
-    assert jobs[1].data_source == "FAOSTAT"
-    assert jobs[2].kind == "desinventar"
-    assert jobs[2].metric_indices == [30, 31]
-    assert jobs[2].data_source == "DesInventar"
-    assert jobs[3].kind == "structured"
-    assert jobs[3].metric_indices == [26, 27, 28, 29]
-    assert jobs[3].data_source is None
-    researcher_jobs = jobs[4:]
-    assert len(researcher_jobs) == 12
-    assert [job.metric_indices[0] for job in researcher_jobs] == list(range(14, 26))
-    assert all(job.kind == "researcher" for job in researcher_jobs)
-    assert all(job.data_source is None for job in researcher_jobs)
-
-
-def test_missing_researcher_process_jobs_skips_structured_and_written(
-    tmp_path: Path,
-) -> None:
-    metrics = [
-        _metric(
-            name="WB",
-            sources=[
-                DataSourceConfig.model_validate(
-                    {
-                        "source": "WorldBank",
-                        "indicator": "NV.AGR.TOTL.ZS",
-                        "exclusive": True,
-                    }
-                )
-            ],
-        ),
-        _metric(
-            name="Text A",
-            sources=[
-                DataSourceConfig.model_validate(
-                    {"source": "FAORepository", "root_url": "https://x"}
-                )
-            ],
-        ),
-        _metric(
-            name="Text B",
-            sources=[
-                DataSourceConfig.model_validate(
-                    {"source": "FAORepository", "root_url": "https://y"}
-                )
-            ],
-        ),
-        _metric(
-            name="FAO",
-            sources=[DataSourceConfig(source="FAOSTAT", exclusive=True)],
-        ),
-        _metric(
-            name="EM",
-            sources=[
-                DataSourceConfig.model_validate(
-                    {"source": "EMDAT", "indicator": "Total Deaths", "exclusive": True}
-                )
-            ],
-        ),
-    ]
+    selected = select_metrics(metrics, None)
     output_dir = tmp_path / "ETH"
     output_dir.mkdir()
     (output_dir / "0001.md").write_text("worldbank\n", encoding="utf-8")
     (output_dir / "0002.md").write_text("text A\n", encoding="utf-8")
     (output_dir / "0003.md").write_text("", encoding="utf-8")
 
-    jobs = missing_researcher_process_jobs(metrics, output_dir)
-    assert [(job.kind, job.metric_indices) for job in jobs] == [("researcher", [3])]
+    missing = filter_missing_metric_indices(selected, output_dir)
+    assert [(index, metric.name) for index, metric in missing] == [(3, "Text B")]
 
     missing_dir = tmp_path / "KEN"
     assert [
-        job.metric_indices[0]
-        for job in missing_researcher_process_jobs(metrics, missing_dir)
-    ] == [2, 3]
+        index for index, _ in filter_missing_metric_indices(selected, missing_dir)
+    ] == [1, 2, 3]
 
 
 def test_format_worldbank_result_plot_and_indicator_ref(tmp_path: Path) -> None:
@@ -1147,7 +1077,7 @@ def test_format_researcher_result_rejects_legacy_vector_provenance() -> None:
         open_gaps=[],
         research_iterations=1,
     )
-    with pytest.raises(ValueError, match="rerun with `pdf-research`"):
+    with pytest.raises(ValueError, match="rerun with `research`"):
         format_researcher_result(output)
 
 

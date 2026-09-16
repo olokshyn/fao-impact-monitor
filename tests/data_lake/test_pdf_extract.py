@@ -23,11 +23,23 @@ from fao_impact_monitor.data_lake.stages.pdf_extract_stage import (
     PDF_EXTRACT_STAGE_NAME,
     PdfExtractStage,
     PdfExtractStageResult,
+    _build_converter,
     _extract_title,
 )
 
 T = TypeVar("T")
 RunAsync = Callable[[Coroutine[Any, Any, T]], T]
+
+
+def test_build_converter_runs_models_on_cpu() -> None:
+    from docling.datamodel.accelerator_options import AcceleratorDevice
+    from docling.datamodel.base_models import InputFormat
+
+    converter = _build_converter()
+    pdf_option = converter.format_to_options[InputFormat.PDF]
+    assert pdf_option.pipeline_options.accelerator_options.device == (
+        AcceleratorDevice.CPU
+    )
 
 
 def test_pdf_extract_registration() -> None:

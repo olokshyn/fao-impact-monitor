@@ -43,7 +43,12 @@ _SOURCE_DATA_BLOCK = re.compile(
     r"Source data:\s*\n+(.*?)(?=\nPlot:|\nSource text:|\nVerified visual facts:|\Z)",
     re.DOTALL,
 )
-_PLOT_MARKDOWN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# Pipeline plots are always `Plot: ![title](plots/<stem>.png)` under the report dir.
+# Ignore scraped markdown images such as `![](blubvsps.gif)`.
+_PLOT_MARKDOWN = re.compile(
+    r"^Plot:\s*!\[([^\]]*)\]\((plots/[^)\s]+)\)\s*$",
+    re.MULTILINE,
+)
 _STRUCTURED_DATASETS = frozenset({"em-dat", "emdat", "desinventar"})
 _LATEST_VALUE = re.compile(
     r"^Latest value:\s*(.+?)\s*\((\d{4})\)\s*$",
@@ -288,7 +293,7 @@ def append_undrr_source_tables(
 
 
 def undrr_metric_seq_numbers(use_case_path: Path | str) -> set[int]:
-    """1-based seq numbers whose exclusive sources are only EM-DAT / DesInventar."""
+    """1-based seq numbers for metrics tagged ``undrr``."""
     metrics = Metric.from_use_case(use_case_path)
     return set(undrr_metric_indices(metrics))
 
@@ -298,7 +303,7 @@ def filter_undrr_reports(
     *,
     use_case_path: Path | str,
 ) -> list[ParsedMetricReport]:
-    """Keep parsed reports for EM-DAT / DesInventar metrics only."""
+    """Keep parsed reports for metrics tagged ``undrr`` only."""
     allowed = undrr_metric_seq_numbers(use_case_path)
     return [report for report in reports if report.meta.seq_number in allowed]
 

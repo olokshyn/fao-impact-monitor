@@ -16,6 +16,8 @@ from fao_impact_monitor.agent.impact_analyzer_agent import (
     DraftStatement,
     DraftStatementList,
     StatementVerification,
+    _country_name_variants,
+    _heuristic_country_decision,
     _normalize_inline_citations,
     _render_statement_text,
     analyze_impact,
@@ -173,6 +175,132 @@ Maize yield fell 17% below the five-year average in {country_in_text}. [1]
         encoding="utf-8",
     )
     return parse_metric_report_file(path)
+
+
+def _visual_fact_report(tmp_path: Path) -> ParsedMetricReport:
+    path = tmp_path / "0025.md"
+    path.write_text(
+        """## Metric info
+
+Seq Number: 25
+
+Name: Food insecurity impact
+
+Description: Projected impacts on food insecurity
+
+Example: Example
+
+Unit: (none)
+
+## Direct evidence
+
+### Direct Evidence 1
+
+Evidence id: crop-prospects
+
+Source: Crop Prospects and Food Situation – Triannual Global Report. No. 2, July 2026
+
+Source url: file://fao_data/crop-prospects.pdf
+
+Source physical pages: 25
+
+Source printed pages: 22
+
+Events: el_nino_2026_27, associated
+
+Source text:
+
+```
+None.
+```
+
+Verified visual facts:
+- India: Wheat 5-yr avg=111.8, 2025=117.9, 2026=120.2; Total cereals Change 2026/2025=-1.2%
+
+## Indirect evidence
+
+None.
+
+## Answer
+
+India cereal production is forecast down 1.2% in 2026. [1]
+""",
+        encoding="utf-8",
+    )
+    return parse_metric_report_file(path)
+
+
+def test_visual_fact_country_row_is_kept_without_llm(tmp_path: Path) -> None:
+    report = _visual_fact_report(tmp_path)
+    item = report.direct[0]
+    variants = _country_name_variants("IND", "Republic of India")
+    assert item.source_text == "None."
+    assert "India:" in item.verified_visual_facts[0]
+    assert _heuristic_country_decision(item, selected_variants=variants) == "keep"
+
+
+def test_expected_impacts_survive_partial_entailment(tmp_path: Path) -> None:
+    report = _visual_fact_report(tmp_path)
+    evidence_id = report.direct[0].evidence_id
+    scripts: dict[str, list[Any]] = {
+        "DraftStatementList": [
+            DraftStatementList(
+                statements=[
+                    DraftStatement(
+                        section="past_impacts",
+                        subsection_title="Agriculture and food production",
+                        text=(
+                            "Documented El Nino impacts on Indian cereals were mixed. "
+                            f"[@{evidence_id}]"
+                        ),
+                        supporting_evidence_ids=[evidence_id],
+                    ),
+                    DraftStatement(
+                        section="expected_impacts",
+                        subsection_title="Projected losses in agriculture production",
+                        text=(
+                            "Cereal production is likely to ease in 2026, with total "
+                            f"cereals down 1.2% versus 2025. [@{evidence_id}]"
+                        ),
+                        supporting_evidence_ids=[evidence_id],
+                    ),
+                ]
+            )
+        ],
+        "StatementVerification": [
+            StatementVerification(
+                statement_id="stmt_001",
+                verdict="entailed",
+                unsupported_parts=[],
+                reasoning="ok",
+            ),
+            StatementVerification(
+                statement_id="stmt_002",
+                verdict="partially_entailed",
+                unsupported_parts=["likely"],
+                reasoning="Projection is inferred",
+            ),
+        ],
+    }
+    model = ScriptedModel(scripts)
+    output = asyncio.run(
+        analyze_impact(
+            country_iso3="IND",
+            reports=[report],
+            config=_test_config(),
+            model=model,  # type: ignore[arg-type]
+            verifier_model=model,  # type: ignore[arg-type]
+            filter_model=model,  # type: ignore[arg-type]
+        )
+    )
+    assert "CountryFilterList" not in model.calls
+    assert "## Expected impacts" in output.markdown
+    assert (
+        "_No supported evidence._"
+        not in output.markdown.split("## Expected impacts", 1)[1]
+    )
+    assert "Cereal production is likely to ease" in output.markdown
+    assert evidence_id not in output.discarded_evidence_ids
 
 
 def test_inline_citations_normalize_and_render() -> None:

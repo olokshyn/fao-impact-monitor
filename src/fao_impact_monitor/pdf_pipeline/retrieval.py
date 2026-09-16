@@ -429,6 +429,19 @@ class PdfEvidenceVectorStore:
 
     async def _bundle(self, unit: EvidenceUnit) -> str:
         parts = [unit.canonical_evidence_text]
+        canonical = unit.canonical_evidence_text or ""
+        page = unit.physical_pages[0] if unit.physical_pages else None
+        printed = unit.printed_pages[0] if unit.printed_pages else None
+        page_label = f"physical page {page}" if page is not None else "physical page"
+        if printed is not None:
+            page_label += f" | printed page {printed}"
+        for fact in unit.verified_visual_facts:
+            if not fact.text or fact.text in canonical:
+                continue
+            region = ",".join(fact.supporting_region_ids)
+            parts.append(
+                f"[VERIFIED VISUAL FACT | {page_label} | region {region}]\n{fact.text}"
+            )
         ids = [*unit.scope_evidence_ids, *unit.continuation_evidence_ids]
         if ids:
             cursor = EvidenceUnit.get_pymongo_collection().find(

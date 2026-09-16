@@ -60,14 +60,17 @@ class ResearchVectorStore(Protocol):
 CLAIM_EXTRACTION_SYSTEM = """\
 You are a claim-extraction agent for evidence-based metric research.
 
-Extract ONLY verbatim quotations from the provided source texts that help
-answer the selected metric quantitatively.
+Extract verbatim quotations from the provided source texts that help answer
+the selected metric. Prefer quantitative evidence, but also keep qualitative
+metric-subject findings and 2026-27 forecasts / current-condition outlooks.
 
 Critical rules:
-1. Extract claims only when they provide quantitative evidence (percentages, hectares,
-   tonnes, heads of livestock, production change, area affected, people
-   affected when tied to agricultural impact). Return no claim for a purely
-   qualitative statement such as "crop losses and infrastructure damage".
+1. Extract quantitative evidence (percentages, hectares, tonnes, heads of
+   livestock, production change, area affected, people affected when tied to
+   agricultural impact) whenever present. Also extract a qualitative claim when
+   it describes the metric subject itself (coping strategies, subsequent
+   hazards, livelihood change, trade disruption, projected food insecurity) or
+   a 2026-27 forecast / current agrifood starting point.
 2. Classify answer_fit for every claim as one of:
    - direct_requested_unit: quantitatively measures the metric subject in the
      requested unit (or an explicitly convertible equivalent in the quotation)
@@ -77,11 +80,15 @@ Critical rules:
      itself and reports numbers — exact unit match is NOT required
    - quantitative_proxy: a quantitative result that does NOT measure the
      metric subject itself but materially informs it (for example a hazard
-     magnitude such as rainfall deficit when the metric is production impact)
+     magnitude such as rainfall deficit when the metric is production impact,
+     or a 2026 cereal/production outlook when the metric is yield or hunger)
+   - direct_qualitative: describes the metric subject without a number
    - supporting_context: relevant hazard, forecast, response, or background
 3. Prefer claims from newer / more recent sources over older ones when both
    are available (more recent publication year, report date, or data period).
-4. quoted_text MUST be an exact contiguous substring of the source text.
+   Keep 2026-27 outlook rows from tables and verified visual facts.
+4. quoted_text MUST be an exact contiguous substring of the source text,
+   including [verified visual facts] / [VERIFIED VISUAL FACT] lines.
    Do not rewrite, clean up, correct, paraphrase, or invent quotations.
 5. source_id MUST be copied exactly from the source header (for example
    web:001 or vs:...). Never invent, truncate, or rewrite source_id values.
@@ -94,9 +101,11 @@ Critical rules:
 8. Useful evidence includes the requested measurement, its numerator and
    denominator, directly convertible component measures, related quantitative
    measures of the metric subject (any unit), hazard magnitude, event
-   attribution, time period, and geography.
+   attribution, time period, geography, and forward-looking production,
+   price, trade, or food-security figures for the current/upcoming event.
 9. Keep distinct figures or propositions as separate claims, including when
-   they occur in the same source. Return no claim for irrelevant sources.
+   they occur in the same source. Return no claim only for truly irrelevant
+   sources.
 10. Never use Metric.example or general knowledge as evidence. The example
    describes desired answer structure only.
 11. Do not invent claim_id values that collide with existing ids; leave
@@ -119,19 +128,22 @@ Classify each claim as:
   the metric subject. Examples include a quantitative change in a related
   hazard (rainfall deficit, drought duration), funding or response figures,
   or background that does not report a result for the metric subject.
-- reject: does not itself answer or quantitatively measure the metric.
+- reject: irrelevant to the metric and to El Nino agrifood impacts (funding
+  appeals, methodology, legends, missing-value notes, or a different topic).
 
-For a quantitative metric, reject numbers attached to the wrong subject as
-answers. A related hazard can be context only when it materially helps
-interpret the requested metric. A quantitative result about the metric
-subject itself is always direct_answer even when the unit differs from
-Metric.unit. Reject funding, response targets, generic methodology, legend
-categories, regional/general statements without a country-specific result,
-and statements that merely say a value is missing.
+For a quantitative metric, do not use numbers attached to the wrong subject as
+direct_answer. A related hazard, production outlook, price, trade, or
+food-security figure can be context when it materially helps interpret the
+requested metric or the 2026-27 starting point. A quantitative result about
+the metric subject itself is always direct_answer even when the unit differs
+from Metric.unit. Reject funding, response targets, generic methodology,
+legend categories, and statements that merely say a value is missing.
 
-Context must still be specific, relevant evidence for the selected metric and
-El Nino event. Do not classify something as context merely because it mentions
-El Nino or the selected country.
+Context must still be specific, relevant evidence for the selected metric,
+country El Nino event, or the current/upcoming (2026-27) outlook. Do not
+classify something as context merely because it mentions El Nino or the
+selected country. Do not reject a country or regional table row, chart fact,
+or forecast solely because it is not in the exact requested unit.
 
 Vectorstore claims have already been filtered by trusted country metadata, so
 do not require the country name inside the quote. El Nino event context may also
@@ -740,10 +752,20 @@ def chunk_from_hit(hit: ChunkHit, retrieval_query: str) -> RetrievedChunk:
     )
 
 
+def _visual_fact_texts(chunk: RetrievedChunk) -> list[str]:
+    texts = [fact.text for fact in chunk.verified_visual_facts if fact.text]
+    texts.extend(fact.text for fact in chunk.research_visual_facts if fact.text)
+    return texts
+
+
 def _source_text_map(state: ResearchState) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for chunk in state.vector_chunks:
-        mapping[chunk.source_id] = chunk.chunk_text
+        parts = [chunk.chunk_text]
+        parts.extend(
+            text for text in _visual_fact_texts(chunk) if text not in chunk.chunk_text
+        )
+        mapping[chunk.source_id] = "\n\n".join(part for part in parts if part)
     for source in state.web_sources:
         mapping[source.source_id] = source.content
     return mapping
@@ -1337,7 +1359,7 @@ def _fallback_pdf_queries(
         ),
         (
             f"{country_name} El Nino {EL_NINO_EVENT_PERIODS} {metric.name} "
-            "assessment data values"
+            "assessment data values 2026-27 forecast outlook"
         ),
     ]
     return [
@@ -1376,13 +1398,15 @@ def _bounded_web_depth(config: ResearcherConfig) -> dict[str, Any]:
 
 def _web_query(metric: Metric, country_name: str) -> str:
     return (
-        f"Find authoritative quantitative evidence for {country_name} that "
-        f"answers this El Nino impact metric: {metric.name}. "
+        f"Find authoritative quantitative and outlook evidence for {country_name} "
+        f"that answers this El Nino impact metric: {metric.name}. "
         f"Required answer form or unit: {metric.unit}. "
         f"Analysis required: {metric.description}. Report numerical values, "
         "units, affected area or population, magnitude, geography, event and "
         "reporting period where available. Also seek the numerator, denominator, "
         "and directly convertible component measurements implied by the metric. "
+        "Include 2026-27 forecasts, current-season production, prices, trade, "
+        "and food-security outlooks even when they are not in the exact unit. "
         "Only use these El Nino event "
         f"periods: {EL_NINO_EVENT_PERIODS}."
     )
@@ -1402,13 +1426,19 @@ def _contains_quantity(text: str) -> bool:
 
 
 def is_direct_evidence_claim(claim: EvidenceClaim) -> bool:
-    """Return whether a claim quantitatively answers the metric subject.
+    """Return whether a claim answers the metric subject.
 
     Direct evidence includes quantitative results for the metric subject in the
-    requested unit or a related quantitative form. Unit mismatch alone does not
-    make a metric-subject claim indirect.
+    requested unit or a related quantitative form, and qualitative findings
+    that still describe that same subject.
     """
-    return claim.statement_type == "answer" and _contains_quantity(claim.quoted_text)
+    if claim.statement_type != "answer":
+        return False
+    return _contains_quantity(claim.quoted_text) or claim.answer_fit in {
+        "direct_requested_unit",
+        "direct_related_measure",
+        "direct_qualitative",
+    }
 
 
 def _quantitative_focus_excerpts(metric: Metric, text: str) -> str:
@@ -1654,12 +1684,56 @@ async def _judge_claim_usefulness(
                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
                 continue
             if verdict.verdict == "reject":
+                if _contains_quantity(claim.quoted_text):
+                    # Related El Nino agrifood quantities still inform expected
+                    # impacts even when they are not the exact metric subject.
+                    accepted.append(
+                        claim.model_copy(
+                            update={
+                                "statement_type": "context",
+                                "answer_fit": "quantitative_proxy",
+                            }
+                        )
+                    )
+                    continue
+                if claim.answer_fit in {
+                    "supporting_context",
+                    "direct_qualitative",
+                    "direct_related_measure",
+                }:
+                    accepted.append(
+                        claim.model_copy(
+                            update={
+                                "statement_type": "context",
+                                "answer_fit": (
+                                    claim.answer_fit
+                                    if claim.answer_fit != "direct_related_measure"
+                                    else "supporting_context"
+                                ),
+                            }
+                        )
+                    )
+                    continue
                 reason = verdict.reason.strip() or "does_not_answer_metric"
                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
                 continue
             if not _contains_quantity(claim.quoted_text):
-                reason = "non_quantitative_claim"
-                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+                accepted.append(
+                    claim.model_copy(
+                        update={
+                            "statement_type": (
+                                "answer"
+                                if verdict.verdict == "direct_answer"
+                                else "context"
+                            ),
+                            "answer_fit": (
+                                "direct_qualitative"
+                                if verdict.verdict == "direct_answer"
+                                else "supporting_context"
+                            ),
+                        }
+                    )
+                )
                 continue
             extractor_says_direct = claim.answer_fit in {
                 "direct_requested_unit",
@@ -2134,15 +2208,24 @@ async def _extract_claims(
         return []
     source_blocks: list[str] = []
     for chunk in new_chunks:
-        focus = _quantitative_focus_excerpts(state.metric, chunk.chunk_text)
+        fact_texts = _visual_fact_texts(chunk)
+        searchable = "\n".join(
+            part for part in (chunk.chunk_text, "\n".join(fact_texts)) if part
+        )
+        focus = _quantitative_focus_excerpts(state.metric, searchable)
         focus_block = (
             f"\n[high-priority quantitative excerpts]\n{focus}\n" if focus else ""
         )
+        visual_block = ""
+        if fact_texts:
+            visual_block = "\n[verified visual facts]\n" + "\n".join(
+                f"- {fact}" for fact in fact_texts
+            )
         source_blocks.append(
             f"[source_id={chunk.source_id} type=vectorstore "
             f"country_scope={state.country_iso3} url={chunk.document_url} "
             f"page={chunk.page_number}]"
-            f"{focus_block}\n[full source]\n"
+            f"{focus_block}{visual_block}\n[full source]\n"
             f"{chunk.chunk_text}"
         )
     for source in new_web:

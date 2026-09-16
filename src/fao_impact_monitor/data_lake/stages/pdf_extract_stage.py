@@ -137,11 +137,20 @@ class DoclingWorker:
 
 
 def _build_converter() -> Any:
+    from docling.datamodel.accelerator_options import (
+        AcceleratorDevice,
+        AcceleratorOptions,
+    )
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    pipeline_options = PdfPipelineOptions(do_ocr=True, do_table_structure=True)
+    # MPS on Apple Silicon aborts in RT-DETR layout resize; keep inference on CPU.
+    pipeline_options = PdfPipelineOptions(
+        do_ocr=True,
+        do_table_structure=True,
+        accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU),
+    )
     return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),

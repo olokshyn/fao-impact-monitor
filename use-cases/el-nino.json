@@ -31,6 +31,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "worldbank"
             ]
         },
         {
@@ -45,6 +49,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "worldbank"
             ]
         },
         {
@@ -105,6 +113,10 @@
                     "unit": "1000 ha",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -145,6 +157,10 @@
                     "unit": "1000 ha",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -185,6 +201,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -215,6 +235,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -245,6 +269,10 @@
                     "unit": "1000 Int$",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -297,6 +325,10 @@
                     "unit": "An",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -361,6 +393,10 @@
                     "unit": "index",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -391,6 +427,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -411,6 +451,10 @@
                     "unit": "%",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -429,6 +473,10 @@
                     "unit": "1000 USD",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
@@ -447,77 +495,116 @@
                     "unit": "1000 USD",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "faostat"
             ]
         },
         {
             "name": "Cropland",
             "description": "Cultivated cropland affected by droughts or floods in every El Niño event since 1997 as a percentage of total area cultivated, national and subnational data points",
             "example": "More than 35% of cultivated land in the south was completely dry, with no harvest expected until the following rainy season.",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Pastureland",
             "description": "Pastureland affected by droughts or floods in every El Niño event since 1997 as a percentage of total area pastured, national and subnational data points",
             "example": "More than 40% of pastureland in the north was completely dry, with no grazing expected until the following rainy season.",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Crop yield loss",
             "description": "Crop yield loss as a result of droughts or floods during El Niño events since 1997 as a percentage of total crop yield, national and subnational data points",
             "example": "Among households surveyed in 14 affected districts, 51% reported harvests more than 50% lower than in 2023. Nearly 720,000 tonnes of maize were lost, valued at about USD 349 million and equivalent to roughly 7% of agricultural GDP",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Livestock loss",
             "description": "Livestock loss as a result of droughts or floods during El Niño events since 1997 as a percentage of total livestock, national and subnational data points",
             "example": "In the worst-affected areas, over 30% of livestock were lost, amounting to an estimated USD 247 million in economic losses.",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Damage to agriculture infrastructure",
             "description": "Damage to agriculture infrastructure or productive assets as a result of droughts or floods during El Niño events since 1997, national and subnational data points",
             "example": "Prolonged flooding damaged up to 80–95% of irrigated farms in some areas.",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Change in livelihood",
             "description": "Change in livelihood or farming decision as a result of droughts or floods during El Niño events since 1997",
             "example": "Crop failure then forced more than half of the households surveyed to replant, while some were unable to do so because they lacked seeds or weather conditions remained unfavorable.Crop and income losses pushed some farming households to borrow money to purchase seed and meet basic needs, increasing debt and the risk of selling productive assets",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Coping strategies",
             "description": "Farmers or pastoralists coping strategies to droughts or floods during El Niño events since 1997",
             "example": "26% sold livestock to meet immediate needs, mainly food, while 25% consumed seed stocks intended for the next planting season",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Subsequent hazards",
             "description": "Subsequent hazards that have an impact on agriculture during El Niño events since 1997",
-            "example": "Drought was compounded by fall armyworm attacks on maize and other crops reported by surveyed households, illustrating that the agricultural consequences of an El Niño season are not confined to rainfall deficits alone. Drought impacts were compounded by pest outbreaks, including rat infestations, and affected rice, corn, vegetables and other crops."
+            "example": "Drought was compounded by fall armyworm attacks on maize and other crops reported by surveyed households, illustrating that the agricultural consequences of an El Niño season are not confined to rainfall deficits alone. Drought impacts were compounded by pest outbreaks, including rat infestations, and affected rice, corn, vegetables and other crops.",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Food prices",
             "description": "Food price increase as a result of drought or flood during El Niño events since 1997",
             "example": "Food prices were around 40% above the five-year average, while maize prices had more than doubled year-on-year",
-            "unit": "%"
+            "unit": "%",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Supply and trade disruptions",
             "description": "Supply and trade disruption as a result of drought or flood during El Niño events since 1997",
-            "example": "the country contracted a record 1.35 million tonnes of rice imports"
+            "example": "the country contracted a record 1.35 million tonnes of rice imports",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Hunger",
             "description": "Incident of Hunger or food insecurity during El Niño events since 1997",
             "example": "Between April and September 2024, 2.79 million people faced IPC Phase 3 or worse acute food insecurity",
-            "unit": "population size"
+            "unit": "population size",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Food insecurity impact",
             "description": "Projected impacts on food insecurity; food prices; hunger linked to El Nino 2026",
-            "example": "Expectations of a decline in wheat output to a level below the five‑year average, as an increased likelihood of El Niño‑induced below‑average rainfall and elevated input costs are foreseen to curtail both plantings and yields."
-
+            "example": "Expectations of a decline in wheat output to a level below the five‑year average, as an increased likelihood of El Niño‑induced below‑average rainfall and elevated input costs are foreseen to curtail both plantings and yields.",
+            "tags": [
+                "fao_repo"
+            ]
         },
         {
             "name": "Deaths and missing persons",
@@ -543,6 +630,12 @@
                     "unit": "persons",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "emdat",
+                "desinventar",
+                "undrr"
             ]
         },
         {
@@ -587,6 +680,12 @@
                     "unit": "persons",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "emdat",
+                "desinventar",
+                "undrr"
             ]
         },
         {
@@ -613,6 +712,12 @@
                     "unit": "persons",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "emdat",
+                "desinventar",
+                "undrr"
             ]
         },
         {
@@ -657,6 +762,12 @@
                     "unit": "1000 USD",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "emdat",
+                "desinventar",
+                "undrr"
             ]
         },
         {
@@ -677,6 +788,11 @@
                     "unit": "facilities",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "desinventar",
+                "undrr"
             ]
         },
         {
@@ -721,6 +837,11 @@
                     "unit": "events",
                     "exclusive": true
                 }
+            ],
+            "tags": [
+                "structured",
+                "desinventar",
+                "undrr"
             ]
         }
     ]

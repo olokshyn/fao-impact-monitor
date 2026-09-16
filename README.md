@@ -43,83 +43,79 @@ uv run fao-impact-monitor
 Always use `uv run` for Python commands and scripts so they execute in the project environment.
 Do not use system `python` or `pip`.
 
-Run only the FAOSTAT metrics from the El Niño use case:
+Run research for one or more countries (FAOSTAT / World Bank / EM-DAT /
+DesInventar + FAO Knowledge Repository evidence by default; Tellus is off
+until you pass `--tellus`):
 
 ```bash
 uv run pipeline research \
-  --country KEN \
-  --use-case use-cases/el-nino.json \
-  --source FAOSTAT
+  --countries ETH,KEN,MWI \
+  --use-case use-cases/el-nino.json
 ```
 
-Run only the EM-DAT / DesInventar (UNDRR) metrics for one or more countries.
-Missing DesInventar country files or empty EM-DAT country slices are skipped
-silently (other sources in the same metric still write):
+Filter metrics by tag (replaces the old `--source` filter). Tags are defined
+on each metric in the use-case JSON (`structured`, `faostat`, `worldbank`,
+`undrr`, `fao_repo`, …):
+
+```bash
+uv run pipeline research \
+  --countries KEN \
+  --use-case use-cases/el-nino.json \
+  --tags faostat
+```
+
+Run only UNDRR (EM-DAT / DesInventar) metrics:
 
 ```bash
 uv run pipeline research \
   --countries ETH,KEN,MWI,GTM,FJI \
   --use-case use-cases/el-nino.json \
-  --metric undrr
+  --tags undrr
 ```
 
-Run only the EM-DAT metrics:
+Preview a multi-country plan without calling APIs:
 
 ```bash
 uv run pipeline research \
-  --country KEN \
+  --countries-file countries.txt \
   --use-case use-cases/el-nino.json \
-  --source emdat
+  --dry-run
 ```
 
-Run only the DesInventar metrics:
+Compile reports from existing per-metric markdown. With no report-type flags,
+`--impact` and `--human` are generated. If any flag is set, only those types
+run:
 
 ```bash
-uv run pipeline research \
-  --country KEN \
-  --use-case use-cases/el-nino.json \
-  --source desinventar
-```
-
-Compile a cited El Niño impact analysis (markdown + PDF) from existing
-per-metric reports for one or more countries:
-
-```bash
-uv run pipeline impact-report \
+uv run pipeline report \
   --countries ETH,KEN,MWI \
   --use-case use-cases/el-nino.json
 ```
 
-Outputs `reports/<USE_CASE>/<COUNTRY>/<ISO3> impact analysis <use-case.name>.md`
-and the matching `.pdf` (e.g. `ETH impact analysis El Nino.pdf`).
-
-Compile a cited UNDRR disaster-loss summary from EM-DAT / DesInventar
-per-metric reports:
-
 ```bash
-uv run pipeline undrr-report \
+uv run pipeline report \
   --countries ETH,KEN,MWI \
-  --use-case use-cases/el-nino.json
+  --use-case use-cases/el-nino.json \
+  --undrr
 ```
 
-Outputs `reports/<USE_CASE>/<COUNTRY>/<ISO3> UNDRR <use-case.name>.md`
-and the matching `.pdf` (e.g. `ETH UNDRR El Nino.pdf`).
+```bash
+uv run pipeline report \
+  --countries ETH \
+  --use-case use-cases/el-nino.json \
+  --technical
+```
 
-Combined per-metric PDFs use
-`<ISO3> metrics <use-case.name>.pdf` (e.g. `ETH metrics El Nino.pdf`).
-Researcher (text) metrics also write a human-readable twin
-(`NNNN-H.md`) next to the machine-readable `NNNN.md`. Build the PDF from
-those human summaries with `--human`. World Bank / FAOSTAT sections use
-`# N. Title`, Description, Example, plots, and References (plots stay
-embedded). The file is written as
-`<ISO3> metrics <use-case.name> - human.pdf`
-(e.g. `FJI metrics El Nino - human.pdf`):
+Outputs live under `reports/<USE_CASE>/<COUNTRY>/`, for example
+`ETH impact analysis El Nino.md` / `.pdf`, `ETH UNDRR El Nino.md` / `.pdf`,
+and combined metrics PDFs (`ETH metrics El Nino.pdf`, or
+`ETH metrics El Nino - human.pdf` for `--human`).
+
+Search vector stores (FAO repo by default; `--tellus` is additive):
 
 ```bash
-uv run pipeline report-pdf \
-  --country ETH \
-  --use-case use-cases/el-nino.json \
-  --human
+uv run pipeline vs-search "drought Kenya" --countries KEN
+uv run pipeline vs-search "drought Kenya" --countries KEN --tellus
 ```
 
 ### Local MongoDB (debug)
@@ -567,6 +563,7 @@ Each metric object:
 | `description`  | What the metric measures                                      |
 | `example`      | Example phrasing of an impact finding                         |
 | `unit`         | Unit for the metric (for example `%`)                         |
+| `tags`         | Optional labels for CLI filtering (for example `structured`, `undrr`, `fao_repo`) |
 | `data_sources` | List of source configs used to fetch evidence for this metric |
 
 Each entry in `data_sources` must include `source` matching a registered

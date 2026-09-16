@@ -273,6 +273,32 @@ def test_ingestion_visual_fact_without_artifact_is_validated() -> None:
     assert accepted[0].visual_artifact_ids == []
 
 
+def test_visual_fact_quote_matches_when_absent_from_chunk_text() -> None:
+    quote = (
+        "India: Wheat 5-yr avg=111.8, 2025=117.9, 2026=120.2; "
+        "Total cereals Change 2026/2025=-1.2%"
+    )
+    hit = _hit(0, "[TARGET SOURCE EVIDENCE]\nNone.")
+    chunk = chunk_from_hit(hit, "cereal production outlook")
+    chunk.verified_visual_facts = [PdfVerifiedVisualFact(text=quote)]
+    state = ResearchState(
+        metric=_metric(),
+        country_iso3="IND",
+        country_name="Republic of India",
+        vector_chunks=[chunk],
+    )
+
+    accepted, rejected = _validate_claim_candidates(
+        state,
+        [_candidate(hit, quote, fit="direct_related_measure")],
+    )
+
+    assert rejected == []
+    assert len(accepted) == 1
+    assert accepted[0].quoted_text == quote
+    assert accepted[0].evidence_modality == "verified_visual_fact"
+
+
 def test_chunk_from_pdf_hit_preserves_exact_evidence_provenance() -> None:
     hit = ChunkHit(
         document_id=PydanticObjectId("507f1f77bcf86cd799439011"),
@@ -592,8 +618,20 @@ def test_relevance_judge_separates_answer_context_and_rejection() -> None:
         _judge_claim_usefulness(state, claims, model=model)  # type: ignore[arg-type]
     )
 
-    assert [claim.claim_id for claim in accepted] == ["claim_002", "claim_003"]
-    assert [claim.statement_type for claim in accepted] == ["context", "answer"]
+    assert [claim.claim_id for claim in accepted] == [
+        "claim_001",
+        "claim_002",
+        "claim_003",
+        "claim_004",
+    ]
+    assert [claim.statement_type for claim in accepted] == [
+        "context",
+        "context",
+        "answer",
+        "answer",
+    ]
+    assert accepted[0].answer_fit == "quantitative_proxy"
+    assert accepted[3].answer_fit == "direct_qualitative"
 
 
 def test_related_unit_quantitative_metric_claim_is_direct_evidence() -> None:

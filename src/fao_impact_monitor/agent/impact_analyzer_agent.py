@@ -533,10 +533,17 @@ comparators are fine if the measured result is about the selected country.
 
 Return discard=false when the evidence is about the selected country at
 national or subnational level, OR about a broader region the country belongs
-to (e.g. East Africa, Horn of Africa, Southern Africa, sub-Saharan Africa),
-OR is a World Bank / FAOSTAT indicator for the selected country.
+to (e.g. East Africa, Horn of Africa, Southern Africa, sub-Saharan Africa,
+South Asia, Asia), OR is a World Bank / FAOSTAT indicator for the selected
+country.
 
-Do not discard merely because a regional document also names neighbours.
+Inspect title, source_text, AND verified_visual_facts (tables and charts).
+Table rows or chart labels that name the selected country are country
+evidence even when source_text is empty or "None.". Keep 2026-27 forecasts,
+outlooks, and current-condition indicators for that country or its region.
+
+Do not discard merely because a regional document also names neighbours, or
+because the source is a global FAO/GIEWS table that includes a country row.
 """
 
 
@@ -579,6 +586,19 @@ class CountryFilterVerdict(BaseModel):
 
 class CountryFilterList(BaseModel):
     verdicts: list[CountryFilterVerdict] = Field(default_factory=list)
+
+
+_REQUIRED_PAST_TITLES = (
+    "Agriculture and food production",
+    "Food security, nutrition and household wellbeing",
+    "Markets and rural livelihoods",
+)
+_REQUIRED_EXPECTED_TITLES = (
+    "Projected losses in agriculture production",
+    "Existing and projected food insecurity, nutrition and humanitarian vulnerability",
+    "Compound risks beyond rain deficits or flooding",
+)
+_EMPTY_SOURCE_TEXT = frozenset({"", "none", "none.", "n/a", "(none)"})
 
 
 class VerifiedStatement(BaseModel):
@@ -849,6 +869,25 @@ def _plot_image_block(
     }
 
 
+def _format_country_filter_item(
+    item: ParsedEvidence,
+    *,
+    max_source_text_chars: int,
+) -> str:
+    source_text = _usable_source_text(item.source_text)
+    if len(source_text) > max_source_text_chars:
+        source_text = source_text[:max_source_text_chars].rstrip() + "\n...[truncated]"
+    lines = [
+        f"evidence_id: {item.evidence_id}",
+        f"title: {item.title}",
+        f"source_text:\n{source_text or '(empty)'}",
+    ]
+    if item.verified_visual_facts:
+        facts = "\n".join(f"- {fact}" for fact in item.verified_visual_facts)
+        lines.append(f"verified_visual_facts:\n{facts}")
+    return "\n".join(lines)
+
+
 def _format_evidence_for_prompt(
     item: ParsedEvidence,
     *,
@@ -916,6 +955,51 @@ def _mentions_country(text: str, variants: Sequence[str]) -> bool:
     return any(variant.casefold() in folded for variant in variants)
 
 
+def _usable_source_text(text: str | None) -> str:
+    if text is None:
+        return ""
+    stripped = text.strip()
+    if stripped.casefold() in _EMPTY_SOURCE_TEXT:
+        return ""
+    return stripped
+
+
+def _evidence_country_blob(item: ParsedEvidence) -> str:
+    """Text used to decide whether evidence is about the selected country."""
+    parts = [
+        item.title,
+        _usable_source_text(item.source_text),
+        " ".join(item.verified_visual_facts),
+        item.source_url or "",
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _is_required_statement(statement: VerifiedStatement) -> bool:
+    """True for the mandatory Past and Expected impacts paragraphs."""
+    if statement.section == "past_impacts" and statement.subsection_title is None:
+        return True
+    title = (statement.subsection_title or "").strip()
+    if statement.section == "past_impacts" and title in _REQUIRED_PAST_TITLES:
+        return True
+    return (
+        statement.section == "expected_impacts" and title in _REQUIRED_EXPECTED_TITLES
+    )
+
+
+def _keep_required_or_none(
+    statement: VerifiedStatement,
+    *,
+    verdict: str | None = None,
+) -> VerifiedStatement | None:
+    """Keep a cited required paragraph unless verification contradicted it."""
+    if verdict == "contradicted":
+        return None
+    if _is_required_statement(statement) and statement.supporting_evidence_ids:
+        return statement
+    return None
+
+
 def _heuristic_country_decision(
     item: ParsedEvidence,
     *,
@@ -924,12 +1008,8 @@ def _heuristic_country_decision(
     """Fast path before LLM country filtering."""
     if item.source_type in {"worldbank", "faostat", "structured"}:
         return "keep"
-    blob = " ".join(
-        part
-        for part in (item.title, item.source_text or "", item.source_url or "")
-        if part
-    )
-    if not blob.strip():
+    blob = _evidence_country_blob(item)
+    if not blob:
         return "keep"
     if _mentions_country(blob, selected_variants):
         return "keep"
@@ -1038,9 +1118,9 @@ async def _filter_country_evidence(
         batch: list[ParsedEvidence],
     ) -> tuple[list[ParsedEvidence], list[str]]:
         block = "\n\n---\n\n".join(
-            f"evidence_id: {item.evidence_id}\n"
-            f"title: {item.title}\n"
-            f"source_text:\n{(item.source_text or '')[: config.max_source_text_chars]}"
+            _format_country_filter_item(
+                item, max_source_text_chars=config.max_source_text_chars
+            )
             for item in batch
         )
         user = (
@@ -1233,16 +1313,33 @@ async def _verify_and_repair(
                         "Verification failed for %s; dropping statement",
                         current.statement_id,
                     )
-                    return None
+                    return _keep_required_or_none(current)
                 if verification.verdict == "entailed":
                     return current
-                if attempt >= config.max_answer_verification_retries:
+                if (
+                    verification.verdict == "partially_entailed"
+                    and _is_required_statement(current)
+                ):
                     logger.info(
-                        "Dropping statement %s after retries verdict=%s",
+                        "Keeping required statement %s as partially_entailed",
                         current.statement_id,
-                        verification.verdict,
                     )
-                    return None
+                    return current
+                if attempt >= config.max_answer_verification_retries:
+                    kept = _keep_required_or_none(current, verdict=verification.verdict)
+                    if kept is None:
+                        logger.info(
+                            "Dropping statement %s after retries verdict=%s",
+                            current.statement_id,
+                            verification.verdict,
+                        )
+                    else:
+                        logger.info(
+                            "Keeping required statement %s after retries verdict=%s",
+                            current.statement_id,
+                            verification.verdict,
+                        )
+                    return kept
                 try:
                     repaired = await _repair_statement(
                         current,
@@ -1256,11 +1353,11 @@ async def _verify_and_repair(
                         "Repair failed for %s; dropping statement",
                         current.statement_id,
                     )
-                    return None
+                    return _keep_required_or_none(current)
                 if repaired is None:
-                    return None
+                    return _keep_required_or_none(current)
                 current = repaired
-            return None
+            return _keep_required_or_none(current)
 
     results = await asyncio.gather(
         *[_verify_one(statement) for statement in statements]

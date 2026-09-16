@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -875,28 +874,22 @@ def select_metrics(
     return selected
 
 
-_UNDRR_DATA_SOURCES = frozenset({"EMDAT", "DesInventar"})
-
-
 def undrr_metric_indices(metrics: Sequence[Metric]) -> list[int]:
-    """1-based indices for metrics that use only EM-DAT and/or DesInventar."""
-    selected: list[int] = []
-    for index, metric in enumerate(metrics, start=1):
-        if not metric.data_sources:
-            continue
-        if all(config.source in _UNDRR_DATA_SOURCES for config in metric.data_sources):
-            selected.append(index)
-    return selected
+    """1-based indices for metrics tagged ``undrr``."""
+    return [
+        index
+        for index, metric in enumerate(metrics, start=1)
+        if any(tag.casefold() == "undrr" for tag in metric.tags)
+    ]
 
 
 def parse_metric_option(
     metrics: Sequence[Metric],
     specs: Sequence[str] | None,
 ) -> list[int] | None:
-    """Parse CLI ``--metric`` values: integers and/or the ``undrr`` alias.
+    """Parse CLI ``--metric`` values as 1-based integers.
 
-    ``undrr`` expands to every metric whose resolved sources are only EM-DAT
-    and/or DesInventar. Returns ``None`` when ``specs`` is omitted (run all).
+    Returns ``None`` when ``specs`` is omitted (run all).
     """
     if specs is None:
         return None
@@ -905,28 +898,90 @@ def parse_metric_option(
 
     indices: list[int] = []
     seen: set[int] = set()
+    n = len(metrics)
     for raw in specs:
         spec = raw.strip()
         if not spec:
             raise ValueError("Metric selector must not be empty")
-        if spec.casefold() == "undrr":
-            for index in undrr_metric_indices(metrics):
-                if index not in seen:
-                    seen.add(index)
-                    indices.append(index)
-            continue
         try:
             value = int(spec)
         except ValueError as exc:
             raise ValueError(
-                f"Invalid metric selector {raw!r}; use a 1-based number or 'undrr'"
+                f"Invalid metric selector {raw!r}; use a 1-based number"
             ) from exc
+        if value < 1 or value > n:
+            raise ValueError(
+                f"Metric index {value} is out of range; valid range is 1..{n}"
+            )
         if value not in seen:
             seen.add(value)
             indices.append(value)
     if not indices:
         raise ValueError("No metrics matched the given --metric selectors")
     return indices
+
+
+def parse_tags_option(raw: str | None) -> list[str] | None:
+    """Parse comma/whitespace ``--tags``; return ``None`` when omitted."""
+    if raw is None:
+        return None
+    tokens = [token.strip() for token in re.split(r"[\s,]+", raw) if token.strip()]
+    if not tokens:
+        raise ValueError("At least one tag is required when --tags is provided")
+    seen: set[str] = set()
+    tags: list[str] = []
+    for token in tokens:
+        key = token.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(token)
+    return tags
+
+
+def metric_has_any_tag(metric: Metric, tags: Sequence[str]) -> bool:
+    """True when the metric has at least one of ``tags`` (case-insensitive)."""
+    metric_tags = {tag.casefold() for tag in metric.tags}
+    return any(tag.casefold() in metric_tags for tag in tags)
+
+
+def select_metrics_by_tags(
+    metrics: Sequence[Metric],
+    tags: Sequence[str] | None,
+) -> list[int] | None:
+    """Return 1-based indices matching any tag, or ``None`` when tags omitted."""
+    if tags is None:
+        return None
+    selected = [
+        index
+        for index, metric in enumerate(metrics, start=1)
+        if metric_has_any_tag(metric, tags)
+    ]
+    if not selected:
+        raise ValueError(f"No metrics matched tags {list(tags)!r}")
+    return selected
+
+
+def resolve_metric_indices(
+    metrics: Sequence[Metric],
+    *,
+    metric_specs: Sequence[str] | None = None,
+    tags: Sequence[str] | None = None,
+) -> list[int] | None:
+    """Intersect ``--metric`` and ``--tags`` selections; ``None`` means all."""
+    by_metric = parse_metric_option(metrics, metric_specs)
+    by_tags = select_metrics_by_tags(metrics, tags)
+    if by_metric is None and by_tags is None:
+        return None
+    if by_metric is None:
+        return by_tags
+    if by_tags is None:
+        return by_metric
+    allowed = set(by_tags)
+    selected = [index for index in by_metric if index in allowed]
+    if not selected:
+        raise ValueError("No metrics matched both --metric and --tags selectors")
+    return selected
 
 
 def parse_countries_iso3(raw: str) -> list[str]:
@@ -946,72 +1001,32 @@ def parse_countries_iso3(raw: str) -> list[str]:
     return countries
 
 
-@dataclass(frozen=True, slots=True)
-class MetricProcessJob:
-    """One OS-process batch for parallel multi-country research."""
-
-    kind: MetricPath
-    metric_indices: list[int]
-    data_source: str | None = None
+def parse_countries_file(path: Path) -> list[str]:
+    """Parse ISO3 codes from a file (comma/whitespace/newline separated)."""
+    text = path.read_text(encoding="utf-8")
+    return parse_countries_iso3(text)
 
 
-def build_metric_process_jobs(metrics: list[Metric]) -> list[MetricProcessJob]:
-    """Partition metrics into process jobs: one batch per structured source, one per researcher."""
-    by_path: dict[MetricPath, list[int]] = {
-        "worldbank": [],
-        "faostat": [],
-        "emdat": [],
-        "desinventar": [],
-        "structured": [],
-        "researcher": [],
-    }
-    for index, metric in select_metrics(metrics, None):
-        by_path[metric_path(metric)].append(index)
-
-    jobs: list[MetricProcessJob] = []
-    if by_path["worldbank"]:
-        jobs.append(
-            MetricProcessJob(
-                kind="worldbank",
-                metric_indices=by_path["worldbank"],
-                data_source="WorldBank",
-            )
-        )
-    if by_path["faostat"]:
-        jobs.append(
-            MetricProcessJob(
-                kind="faostat",
-                metric_indices=by_path["faostat"],
-                data_source="FAOSTAT",
-            )
-        )
-    if by_path["emdat"]:
-        jobs.append(
-            MetricProcessJob(
-                kind="emdat",
-                metric_indices=by_path["emdat"],
-                data_source="EMDAT",
-            )
-        )
-    if by_path["desinventar"]:
-        jobs.append(
-            MetricProcessJob(
-                kind="desinventar",
-                metric_indices=by_path["desinventar"],
-                data_source="DesInventar",
-            )
-        )
-    if by_path["structured"]:
-        jobs.append(
-            MetricProcessJob(
-                kind="structured",
-                metric_indices=by_path["structured"],
-                data_source=None,
-            )
-        )
-    for index in by_path["researcher"]:
-        jobs.append(MetricProcessJob(kind="researcher", metric_indices=[index]))
-    return jobs
+def merge_countries_iso3(
+    *,
+    countries: str | None = None,
+    countries_file: Path | None = None,
+) -> list[str]:
+    """Union ``--countries`` and ``--countries-file`` (file order, then CLI)."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for source in (
+        parse_countries_file(countries_file) if countries_file is not None else [],
+        parse_countries_iso3(countries) if countries is not None else [],
+    ):
+        for iso3 in source:
+            if iso3 in seen:
+                continue
+            seen.add(iso3)
+            merged.append(iso3)
+    if not merged:
+        raise ValueError("Provide --countries and/or --countries-file")
+    return merged
 
 
 def metric_report_is_generated(report_path: Path) -> bool:
@@ -1022,19 +1037,16 @@ def metric_report_is_generated(report_path: Path) -> bool:
         return False
 
 
-def missing_researcher_process_jobs(
-    metrics: list[Metric],
+def filter_missing_metric_indices(
+    selected: list[tuple[int, Metric]],
     output_dir: Path,
-) -> list[MetricProcessJob]:
-    """One researcher job per text metric that does not yet have a report."""
-    jobs: list[MetricProcessJob] = []
-    for index, metric in select_metrics(metrics, None):
-        if metric_path(metric) != "researcher":
-            continue
-        if metric_report_is_generated(metric_report_path(output_dir, index)):
-            continue
-        jobs.append(MetricProcessJob(kind="researcher", metric_indices=[index]))
-    return jobs
+) -> list[tuple[int, Metric]]:
+    """Keep only metrics whose ``NNNN.md`` report is not yet generated."""
+    return [
+        (index, metric)
+        for index, metric in selected
+        if not metric_report_is_generated(metric_report_path(output_dir, index))
+    ]
 
 
 def format_structured_result(
@@ -1484,7 +1496,7 @@ def _validate_report_source(source: SourceReference) -> None:
     if source.evidence_id is None or not source.physical_pages:
         raise ValueError(
             "Research reports require PDF evidence provenance; rerun with "
-            f"`pdf-research` (source {source.source_id})."
+            f"`research` (source {source.source_id})."
         )
 
 
