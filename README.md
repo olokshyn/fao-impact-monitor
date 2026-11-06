@@ -221,10 +221,10 @@ uv run pytest -m "not integration"
 
 Two layers sit under `src/fao_impact_monitor/`:
 
-| Layer | Path | Role |
-| --- | --- | --- |
-| **Data providers** | `data_provider/` | Thin wrappers over external APIs. They call services such as Tellus and return raw payloads (search hits, document chunks, etc.). No metric-level interpretation. |
-| **Data sources** | `data_source/` | Higher-level abstractions that answer the questions needed to compute a `Metric` (`metric/metric.py`). A `DataSource` may use AI to understand data from providers (Tellus) and other evidence pipelines (for example the PDF data lake) and return `DataResult` evidence for a metric. |
+| Layer              | Path             | Role                                                                                                                                                                                                                                                                                    |
+| ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Data providers** | `data_provider/` | Thin wrappers over external APIs. They call services such as Tellus and return raw payloads (search hits, document chunks, etc.). No metric-level interpretation.                                                                                                                       |
+| **Data sources**   | `data_source/`   | Higher-level abstractions that answer the questions needed to compute a `Metric` (`metric/metric.py`). A `DataSource` may use AI to understand data from providers (Tellus) and other evidence pipelines (for example the PDF data lake) and return `DataResult` evidence for a metric. |
 
 Example: `tellus_provider` searches and fetches Tellus chunks; `TellusDataSource` builds a metric/country query, starts the Tellus process pipeline on matching documents, and returns results suitable for metric computation.
 
@@ -232,11 +232,11 @@ Example: `tellus_provider` searches and fetches Tellus chunks; `TellusDataSource
 
 Use-case metrics call registered **data sources**. Some sources hit an API directly; others seed a **data lake pipeline** that discovers and processes documents in MongoDB. Each document tracks status **per pipeline** (`PENDING` → `RUNNING` → `COMPLETED` / `FAILED`). When a stage creates child documents, `Pipeline.run()` cascades into those children’s enrolled pipelines before returning.
 
-| Data source | Entry | What it does |
-| --- | --- | --- |
-| `WorldBank` | World Bank API | Indicator time series → `DataResult` (no data-lake pipeline) |
-| `FaoRepository` | `pdf_crawl` | Seed web page → DFS crawl → PDFs enrolled in `pdf_process` |
-| `Tellus` | `tellus_process` | Search Tellus → fetch matched pages → detect countries → embed |
+| Data source     | Entry            | What it does                                                   |
+| --------------- | ---------------- | -------------------------------------------------------------- |
+| `WorldBank`     | World Bank API   | Indicator time series → `DataResult` (no data-lake pipeline)   |
+| `FaoRepository` | `pdf_crawl`      | Seed web page → DFS crawl → PDFs enrolled in `pdf_process`     |
+| `Tellus`        | `tellus_process` | Search Tellus → fetch matched pages → detect countries → embed |
 
 ```mermaid
 flowchart TB
@@ -283,11 +283,11 @@ flowchart TB
 
 **Stages (in order within each pipeline):**
 
-| Pipeline | Stages |
-| --- | --- |
-| `pdf_crawl` | `pdf_crawl` — DFS crawl from a `WebPageDocument` seed; enrolls linked pages back into `pdf_crawl` and discovered PDFs into `pdf_process` |
-| `pdf_process` | `pdf_extract` → `country_detect` → `embed_chunks` |
-| `tellus_process` | `tellus_document_fetch` → `country_detect` → `embed_chunks` |
+| Pipeline         | Stages                                                                                                                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `pdf_crawl`      | `pdf_crawl` — DFS crawl from a `WebPageDocument` seed; enrolls linked pages back into `pdf_crawl` and discovered PDFs into `pdf_process` |
+| `pdf_process`    | `pdf_extract` → `country_detect` → `embed_chunks`                                                                                        |
+| `tellus_process` | `tellus_document_fetch` → `country_detect` → `embed_chunks`                                                                              |
 
 Document types: `WebPageDocument` (crawl seeds / intermediate pages), `PdfDocument` (`pdf_process`), `TellusDocument` (`tellus_process`). Shared stages (`country_detect`, `embed_chunks`) take a chunk iterator from the preceding extract/fetch stage.
 
@@ -557,14 +557,14 @@ Top-level fields:
 
 Each metric object:
 
-| Field          | Meaning                                                       |
-| -------------- | ------------------------------------------------------------- |
-| `name`         | Metric display name                                           |
-| `description`  | What the metric measures                                      |
-| `example`      | Example phrasing of an impact finding                         |
-| `unit`         | Unit for the metric (for example `%`)                         |
+| Field          | Meaning                                                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| `name`         | Metric display name                                                               |
+| `description`  | What the metric measures                                                          |
+| `example`      | Example phrasing of an impact finding                                             |
+| `unit`         | Unit for the metric (for example `%`)                                             |
 | `tags`         | Optional labels for CLI filtering (for example `structured`, `undrr`, `fao_repo`) |
-| `data_sources` | List of source configs used to fetch evidence for this metric |
+| `data_sources` | List of source configs used to fetch evidence for this metric                     |
 
 Each entry in `data_sources` must include `source` matching a registered
 `DataSource.source` value (for example `"WorldBank"`). Additional keys are
@@ -603,3 +603,69 @@ Recommended VS Code / Cursor extensions (see `.vscode/extensions.json`):
 
 - Ruff (format on save and import organization)
 - Mypy Type Checker
+
+## Jena Graph Database
+
+Build Jena 6.2.0 docker image:
+
+```bash
+docker build \
+  --build-arg JENA_VERSION=6.2.0 \
+  --build-arg REPO=https://repo.maven.apache.org/maven2 \
+  -t local/jena-fuseki:6.2.0 \
+  'https://github.com/apache/jena.git#jena-6.2.0:jena-fuseki2/jena-fuseki-docker'
+```
+
+Start Fuseki with persistent storage:
+
+```bash
+docker run -d --name jena-fuseki \
+  -p 127.0.0.1:3030:3030 \
+  -v jena-fuseki-data:/fuseki/databases \
+  -e 'JAVA_OPTIONS=-Xms256m -Xmx1g' \
+  local/jena-fuseki:6.2.0 \
+  --tdb2 --update --loc /fuseki/databases /ds
+```
+
+SPARQL query endpoint is [http://127.0.0.1:3030/ds/query](http://127.0.0.1:3030/ds/query).
+
+## Athena
+
+Athena is the evidence-graph service under `src/fao_impact_monitor/athena`.
+Fuseki is the authoritative graph. MongoDB holds a rebuildable retrieval index.
+Files go to the local object store or GCS (`ATHENA_OBJECT_STORE=gcs` and
+`ATHENA_GCS_BUCKET`).
+
+Build the Fuseki image from the Jena section above, then start Fuseki,
+RabbitMQ, and the local Atlas-compatible MongoDB:
+
+```bash
+docker compose up -d mongodb fuseki rabbitmq
+```
+
+Serve the API and the batched worker in two processes:
+
+```bash
+uv run athena serve
+uv run athena-worker worker
+```
+
+`POST /ingestions` accepts a batch of documents and raw claims and returns
+`202` with a job id. `POST /research` does the same for a question and filters.
+Workers run a task type once enough items have accumulated or the oldest item
+has waited long enough. Agent decisions and processed claims are written to
+the log and to the `decision_log` collection in the `athena` database.
+
+Relation precision and candidate-retrieval recall are computed by
+`fao_impact_monitor.athena.eval.metrics` and covered in `tests/athena/`.
+
+Quick test: load a triple and query it:
+
+```bash
+printf '%s\n' '<https://example.org/alice> <https://example.org/knows> <https://example.org/bob> .' |
+  curl -fsS -H 'Content-Type: text/turtle' --data-binary @- \
+    'http://127.0.0.1:3030/ds/data?default'
+
+curl -fsSG --data-urlencode 'query=SELECT * WHERE { ?s ?p ?o } LIMIT 10' \
+  'http://127.0.0.1:3030/ds/query'
+```

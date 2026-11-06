@@ -25,7 +25,26 @@ services:
       - mongo_configdb:/data/configdb
       - mongo_mongot:/data/mongot
 
+  # Build once with the command in the README (Jena section), then:
+  #   docker compose up -d fuseki rabbitmq
+  fuseki:
+    image: local/jena-fuseki:6.2.0
+    ports:
+      - "127.0.0.1:3030:3030"
+    environment:
+      - JAVA_OPTIONS=-Xms256m -Xmx1g
+    volumes:
+      - jena-fuseki-data:/fuseki/databases
+    command: ["--tdb2", "--update", "--loc", "/fuseki/databases", "/ds"]
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+
 volumes:
   mongo_db:
   mongo_configdb:
   mongo_mongot:
+  jena-fuseki-data:

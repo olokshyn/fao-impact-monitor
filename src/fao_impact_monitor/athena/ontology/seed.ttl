@@ -1,0 +1,200 @@
+@prefix athena: <https://fao.org/athena/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+
+<https://fao.org/athena/tagRegistry/v1> a athena:TagRegistry ;
+    athena:version "1" .
+
+athena:Phenomenon a owl:Class ; rdfs:label "Phenomenon" .
+athena:Exposure a owl:Class ; rdfs:label "Exposure" .
+athena:AgriculturalVariable a owl:Class ; rdfs:label "Agricultural variable" .
+
+<https://fao.org/athena/tag/country> a athena:TagField ;
+    athena:fieldName "country" ;
+    athena:valueType "string" ;
+    athena:multiplicity "many" ;
+    athena:extractionRule "Extract the place the evidence applies to. A place that is only mentioned is not applicability." ;
+    athena:inheritanceRule "A subnational place may add its country only through an explicit location derivation." ;
+    athena:inherits "false" .
+
+<https://fao.org/athena/tag/region> a athena:TagField ;
+    athena:fieldName "region" ;
+    athena:valueType "string" ;
+    athena:multiplicity "many" ;
+    athena:extractionRule "Extract the subnational region the evidence applies to, not a region merely mentioned." ;
+    athena:inheritanceRule "Do not copy a parent document region unless a derivation records why it applies." ;
+    athena:inherits "false" .
+
+<https://fao.org/athena/tag/broader_region> a athena:TagField ;
+    athena:fieldName "broader_region" ;
+    athena:valueType "string" ;
+    athena:multiplicity "many" ;
+    athena:extractionRule "Extract broader geographical classifications, including overlapping ones, only when the evidence applies to them." ;
+    athena:inheritanceRule "Ancestors from the location hierarchy may be added only with an explicit derivation." ;
+    athena:inherits "false" .
+
+<https://fao.org/athena/tag/source_type> a athena:TagField ;
+    athena:fieldName "source_type" ;
+    athena:valueType "string" ;
+    athena:multiplicity "one" ;
+    athena:vocabulary "fao-publication" ;
+    athena:vocabulary "peer-reviewed" ;
+    athena:vocabulary "web-page" ;
+    athena:vocabulary "dataset" ;
+    athena:vocabulary "report" ;
+    athena:extractionRule "Classify the publication, not the way it was found." ;
+    athena:inheritanceRule "Evidence and claims inherit the source publication type." ;
+    athena:inherits "true" .
+
+<https://fao.org/athena/tag/publishing_group> a athena:TagField ;
+    athena:fieldName "publishing_group" ;
+    athena:valueType "string" ;
+    athena:multiplicity "one" ;
+    athena:extractionRule "Extract the publishing group when the source states it." ;
+    athena:inheritanceRule "Evidence and claims inherit the source publishing group." ;
+    athena:inherits "true" .
+
+<https://fao.org/athena/tag/publisher> a athena:TagField ;
+    athena:fieldName "publisher" ;
+    athena:valueType "string" ;
+    athena:multiplicity "one" ;
+    athena:extractionRule "Extract the publisher when the source states it. Keep it separate from the publishing group and the journal." ;
+    athena:inheritanceRule "Evidence and claims inherit the source publisher." ;
+    athena:inherits "true" .
+
+<https://fao.org/athena/tag/journal> a athena:TagField ;
+    athena:fieldName "journal" ;
+    athena:valueType "string" ;
+    athena:multiplicity "one" ;
+    athena:extractionRule "Extract the journal when the source states it." ;
+    athena:inheritanceRule "Evidence and claims inherit the source journal." ;
+    athena:inherits "true" .
+
+<https://fao.org/athena/tag/acquisition_channel> a athena:TagField ;
+    athena:fieldName "acquisition_channel" ;
+    athena:valueType "string" ;
+    athena:multiplicity "one" ;
+    athena:vocabulary "web-search" ;
+    athena:vocabulary "direct-upload" ;
+    athena:vocabulary "feed" ;
+    athena:extractionRule "Record how Athena obtained the source. Do not change the publication type." ;
+    athena:inheritanceRule "Evidence and claims inherit the acquisition channel and keep it distinct from source type." ;
+    athena:inherits "true" .
+
+<https://fao.org/athena/relation/causes> a owl:ObjectProperty ;
+    rdfs:label "causes" ;
+    athena:definition "The subject phenomenon brings about the object phenomenon." ;
+    athena:directionality "directional" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Irrigation causes higher maize yield." .
+
+<https://fao.org/athena/relation/increases> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/causes> ;
+    rdfs:label "increases" ;
+    athena:definition "The subject phenomenon increases the object phenomenon. Direction is not a judgment of benefit or harm." ;
+    athena:directionality "directional" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Rainfall increases maize yield." .
+
+<https://fao.org/athena/relation/decreases> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/causes> ;
+    rdfs:label "decreases" ;
+    athena:definition "The subject phenomenon decreases the object phenomenon. Direction is not a judgment of benefit or harm." ;
+    athena:directionality "directional" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Drought decreases maize yield." .
+
+<https://fao.org/athena/relation/yieldLoss> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/decreases> ;
+    rdfs:label "yield loss" ;
+    athena:definition "A decrease in a named agricultural variable, the quantity of crop yield produced per unit area or per producing unit." ;
+    athena:directionality "directional" ;
+    athena:subjectType athena:Exposure ;
+    athena:objectType athena:AgriculturalVariable ;
+    athena:version "1" ;
+    athena:example "Drought caused maize yield loss." ;
+    athena:alias "yield loss" .
+
+<https://fao.org/athena/relation/correlatesWith> a owl:ObjectProperty ;
+    rdfs:label "correlates with" ;
+    athena:definition "The phenomena vary together. This does not state a cause." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Fertilizer use correlates with yield." .
+
+<https://fao.org/athena/relation/positivelyCorrelatesWith> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/correlatesWith> ;
+    rdfs:label "positively correlates with" ;
+    athena:definition "The phenomena increase together. This does not state a cause." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Rainfall positively correlates with yield." .
+
+<https://fao.org/athena/relation/negativelyCorrelatesWith> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/correlatesWith> ;
+    rdfs:label "negatively correlates with" ;
+    athena:definition "One phenomenon increases as the other decreases. This does not state a cause." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Drought intensity negatively correlates with yield." .
+
+<https://fao.org/athena/relation/supports> a owl:ObjectProperty ;
+    rdfs:label "supports" ;
+    athena:definition "The subject proposition supports the object proposition. Support is directional." ;
+    athena:directionality "directional" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "A field trial supports the yield estimate." .
+
+<https://fao.org/athena/relation/contradicts> a owl:ObjectProperty ;
+    rdfs:label "contradicts" ;
+    athena:definition "The propositions or relations cannot both hold in the stated form. Context differences alone are not contradictions." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Two yield estimates for the same crop, place, and season contradict each other." .
+
+<https://fao.org/athena/relation/oppositeEffectDirection> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/contradicts> ;
+    rdfs:label "opposite effect direction" ;
+    athena:definition "The two relations assign opposite effect directions to the same phenomenon." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "One claim says drought increases yield and another says drought decreases yield." .
+
+<https://fao.org/athena/relation/incompatibleEstimate> a owl:ObjectProperty ;
+    rdfs:subPropertyOf <https://fao.org/athena/relation/contradicts> ;
+    rdfs:label "incompatible estimate" ;
+    athena:definition "Two quantitative estimates of the same variable, population, and period cannot both be true." ;
+    athena:directionality "symmetric" ;
+    athena:subjectType athena:Phenomenon ;
+    athena:objectType athena:Phenomenon ;
+    athena:version "1" ;
+    athena:example "Two incompatible maize yield estimates for the same county and season." .
+
+<https://fao.org/athena/loc/eastern-africa> a athena:Location ;
+    athena:code "eastern-africa" ;
+    athena:level "broader-region" ;
+    rdfs:label "Eastern Africa" .
+
+<https://fao.org/athena/loc/KEN> a athena:Location ;
+    athena:code "KEN" ;
+    athena:level "country" ;
+    rdfs:label "Kenya" ;
+    athena:broader <https://fao.org/athena/loc/eastern-africa> .
