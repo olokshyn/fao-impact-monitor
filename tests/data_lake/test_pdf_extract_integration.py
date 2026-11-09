@@ -13,9 +13,9 @@ from fao_impact_monitor.data_lake.stages.pdf_crawl_stage import (
     PdfCrawlStageResult,
 )
 from fao_impact_monitor.data_lake.stages.pdf_extract_stage import (
-    DoclingWorker,
     PdfExtractStage,
     PdfExtractStageResult,
+    PdfExtractWorker,
 )
 
 T = TypeVar("T")
@@ -56,10 +56,10 @@ def test_pdf_extract_real_fao_el_nino_pdf(
     try:
         result = run_async(stage.run(doc, {}, []))
     finally:
-        worker = DoclingWorker._instance
+        worker = PdfExtractWorker._instance
         if worker is not None:
             worker.shutdown()
-            DoclingWorker._instance = None
+            PdfExtractWorker._instance = None
 
     assert result.status == Status.COMPLETED, result.error
     assert isinstance(result, PdfExtractStageResult)

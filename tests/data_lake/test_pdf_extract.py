@@ -31,15 +31,18 @@ T = TypeVar("T")
 RunAsync = Callable[[Coroutine[Any, Any, T]], T]
 
 
-def test_build_converter_runs_models_on_cpu() -> None:
+def test_build_converter_matches_previous_docling_pipeline() -> None:
     from docling.datamodel.accelerator_options import AcceleratorDevice
     from docling.datamodel.base_models import InputFormat
 
-    converter = _build_converter()
-    pdf_option = converter.format_to_options[InputFormat.PDF]
-    assert pdf_option.pipeline_options.accelerator_options.device == (
-        AcceleratorDevice.CPU
-    )
+    converter = _build_converter(True)
+    options = converter.format_to_options[InputFormat.PDF].pipeline_options
+    assert options.do_ocr is True
+    assert options.do_table_structure is True
+    assert options.accelerator_options.device == AcceleratorDevice.CPU
+    assert options.table_structure_options.do_cell_matching is True
+    assert options.images_scale == 1.0
+    assert list(options.ocr_options.lang) == []
 
 
 def test_pdf_extract_registration() -> None:
@@ -206,6 +209,10 @@ async def _unused_submit(
 def test_extract_title_prefers_top_level_heading_even_if_shorter() -> None:
     from docling_core.types.doc.labels import DocItemLabel
 
+    class _Prov:
+        def __init__(self, page_no: int) -> None:
+            self.page_no = page_no
+
     class _Item:
         def __init__(
             self,
@@ -213,10 +220,12 @@ def test_extract_title_prefers_top_level_heading_even_if_shorter() -> None:
             text: str,
             *,
             level: int | None = None,
+            page_no: int | None = None,
         ) -> None:
             self.label = label
             self.text = text
             self.level = level
+            self.prov = [] if page_no is None else [_Prov(page_no)]
 
     class _Doc:
         def __init__(self, items: list[_Item]) -> None:
@@ -257,6 +266,14 @@ def test_extract_title_prefers_top_level_heading_even_if_shorter() -> None:
         ]
     )
     assert _extract_title(same_level, fallback=None) == "Longer same level"
+
+    later_page = _Doc(
+        [
+            _Item(DocItemLabel.SECTION_HEADER, "Page one section", level=1, page_no=1),
+            _Item(DocItemLabel.TITLE, "Later page title", page_no=2),
+        ]
+    )
+    assert _extract_title(later_page, fallback=None) == "Page one section"
 
 
 def test_extract_keeps_agent_title_over_docling(

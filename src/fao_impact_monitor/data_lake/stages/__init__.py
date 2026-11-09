@@ -22,10 +22,10 @@ from .pdf_crawl_stage import (
 )
 from .pdf_extract_stage import (
     PDF_EXTRACT_STAGE_NAME,
-    DoclingWorker,
     PdfExtractStage,
     PdfExtractStageResult,
     PdfExtractStageVersion,
+    PdfExtractWorker,
 )
 from .tellus_document_fetch_stage import (
     TELLUS_DOCUMENT_FETCH_STAGE_NAME,
@@ -47,7 +47,6 @@ __all__ = [
     "CountryDetectStageResult",
     "CountryDetectStageVersion",
     "CountryDetection",
-    "DoclingWorker",
     "EmbedChunksStage",
     "EmbedChunksStageResult",
     "EmbedChunksStageVersion",
@@ -57,6 +56,7 @@ __all__ = [
     "PdfExtractStage",
     "PdfExtractStageResult",
     "PdfExtractStageVersion",
+    "PdfExtractWorker",
     "TellusDocumentFetchStage",
     "TellusDocumentFetchStageResult",
     "TellusDocumentFetchStageVersion",

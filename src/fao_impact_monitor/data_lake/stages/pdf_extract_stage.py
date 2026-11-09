@@ -1,17 +1,15 @@
-"""PDF → per-page markdown extract stage powered by Docling."""
+"""PDF → per-page markdown extract stage powered by pdf-extractor-ai."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
-import queue
-import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pdf_extractor_ai import PdfExtractor
 from pydantic import Field
 
 from fao_impact_monitor.config import PdfExtractConfig, get_config
@@ -50,44 +48,27 @@ class PdfExtractStageVersion(StageVersion):
         class_id_value = PDF_EXTRACT_STAGE_NAME
 
 
-@dataclass(slots=True)
-class _ExtractJob:
-    pdf_path: Path
-    out_dir: Path
-    version_id: str
-    fallback_title: str | None
-    loop: asyncio.AbstractEventLoop
-    future: asyncio.Future[PdfExtractStageResult]
-
-
-class DoclingWorker:
-    """Single-thread Docling worker: loads weights once; queue carries paths only.
+class PdfExtractWorker:
+    """One pdf-extractor-ai worker. Docling weights load once on that thread.
 
     Callers are expected on a single event-loop thread (many coroutines OK).
     """
 
-    _instance: DoclingWorker | None = None
+    _instance: PdfExtractWorker | None = None
 
     def __init__(self) -> None:
-        self._jobs: queue.Queue[_ExtractJob | None] = queue.Queue()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="docling-worker",
-            daemon=True,
+        # num_workers=1 matches the previous single converter thread.
+        # converter_factory keeps OCR, tables, cell matching, and CPU.
+        self._extractor = PdfExtractor(
+            num_workers=1,
+            converter_factory=_build_converter,
         )
-        self._started = False
 
     @classmethod
-    def instance(cls) -> DoclingWorker:
+    def instance(cls) -> PdfExtractWorker:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-
-    def _ensure_started(self) -> None:
-        if self._started:
-            return
-        self._thread.start()
-        self._started = True
 
     async def submit(
         self,
@@ -97,46 +78,29 @@ class DoclingWorker:
         version_id: str,
         fallback_title: str | None,
     ) -> PdfExtractStageResult:
-        self._ensure_started()
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[PdfExtractStageResult] = loop.create_future()
-        self._jobs.put(
-            _ExtractJob(
-                pdf_path=pdf_path,
-                out_dir=out_dir,
-                version_id=version_id,
-                fallback_title=fallback_title,
-                loop=loop,
-                future=future,
-            )
+        return await asyncio.to_thread(
+            _process_pdf,
+            self._extractor,
+            pdf_path,
+            out_dir,
+            version_id,
+            fallback_title,
         )
-        return await future
-
-    def _run(self) -> None:
-        # Import and weight load happen only on this worker thread.
-        converter = _build_converter()
-        while True:
-            job = self._jobs.get()
-            if job is None:
-                return
-            try:
-                result = _process_job(converter, job)
-            except Exception as exc:
-                logger.exception("Docling extract failed for %s", job.pdf_path)
-                _set_future_exception(job, exc)
-            else:
-                _set_future_result(job, result)
 
     def shutdown(self) -> None:
-        """Stop the worker loop (tests / process teardown)."""
-        if not self._started:
-            return
-        self._jobs.put(None)
-        self._thread.join(timeout=30)
-        self._started = False
+        """Stop the extractor threads (tests / process teardown)."""
+        self._extractor.shutdown()
+        if PdfExtractWorker._instance is self:
+            PdfExtractWorker._instance = None
 
 
-def _build_converter() -> Any:
+def _build_converter(do_ocr: bool) -> Any:
+    """Build the converter PdfExtractor runs for this stage.
+
+    MPS on Apple Silicon aborts in RT-DETR layout resize; keep inference on CPU.
+    Leave table-cell matching, image scale, and OCR languages at Docling defaults:
+    that is the pipeline this stage used before pdf-extractor-ai.
+    """
     from docling.datamodel.accelerator_options import (
         AcceleratorDevice,
         AcceleratorOptions,
@@ -145,9 +109,8 @@ def _build_converter() -> Any:
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
 
-    # MPS on Apple Silicon aborts in RT-DETR layout resize; keep inference on CPU.
     pipeline_options = PdfPipelineOptions(
-        do_ocr=True,
+        do_ocr=do_ocr,
         do_table_structure=True,
         accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU),
     )
@@ -158,49 +121,55 @@ def _build_converter() -> Any:
     )
 
 
-def _process_job(
-    converter: Any,
-    job: _ExtractJob,
+def _process_pdf(
+    extractor: PdfExtractor,
+    pdf_path: Path,
+    out_dir: Path,
+    version_id: str,
+    fallback_title: str | None,
 ) -> PdfExtractStageResult:
-    import pypdfium2 as pdfium
+    if not pdf_path.is_file():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    if not job.pdf_path.is_file():
-        raise FileNotFoundError(f"PDF not found: {job.pdf_path}")
-
-    # Read/open PDF on the worker thread (bytes stay off the queue).
-    pdf = pdfium.PdfDocument(str(job.pdf_path))
-    try:
-        num_pages = len(pdf)
-    finally:
-        pdf.close()
-
+    # do_ocr=True: this stage always OCRs, including born-digital pages.
+    document = extractor.extract(
+        pdf_path.read_bytes(),
+        do_ocr=True,
+        name=pdf_path.name,
+    )
+    page_numbers = sorted(int(number) for number in document.pages)
+    if not page_numbers:
+        raise ValueError(f"PDF has no pages: {pdf_path}")
+    num_pages = page_numbers[-1]
     if num_pages < 1:
-        raise ValueError(f"PDF has no pages: {job.pdf_path}")
+        raise ValueError(f"PDF has no pages: {pdf_path}")
 
-    job.out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     page_paths: list[str] = []
-    title: str | None = None
-
     for page_no in range(1, num_pages + 1):
-        conv = converter.convert(str(job.pdf_path), page_range=(page_no, page_no))
-        markdown = conv.document.export_to_markdown()
-        page_path = job.out_dir / f"page_{page_no:04d}.md"
-        # Markdown is written on the worker thread (content stays off the queue).
+        # Docling's own markdown, one file per page, as this stage wrote before.
+        markdown = document.export_to_markdown(page_no=page_no)
+        page_path = out_dir / f"page_{page_no:04d}.md"
         page_path.write_text(markdown, encoding="utf-8")
         page_paths.append(str(page_path))
-        if page_no == 1:
-            title = _extract_title(conv.document, job.fallback_title)
 
-    if title is None:
-        title = job.fallback_title
-
+    title = _extract_title(document, fallback_title)
     return PdfExtractStageResult(
-        version_id=job.version_id,
+        version_id=version_id,
         status=Status.COMPLETED,
         title=title,
         num_pages=num_pages,
         page_paths=page_paths,
     )
+
+
+def _is_first_page(item: Any) -> bool:
+    """True for page 1, and for items that carry no page provenance."""
+    prov = getattr(item, "prov", None) or []
+    if not prov:
+        return True
+    page_no = getattr(prov[0], "page_no", None)
+    return page_no in (None, 1)
 
 
 def _extract_title(document: Any, fallback: str | None) -> str | None:
@@ -217,6 +186,8 @@ def _extract_title(document: Any, fallback: str | None) -> str | None:
     best_rank: int | None = None
     best_texts: list[str] = []
     for item, _level in document.iterate_items():
+        if not _is_first_page(item):
+            continue
         label = getattr(item, "label", None)
         text = " ".join((getattr(item, "text", None) or "").split())
         if not text:
@@ -236,22 +207,6 @@ def _extract_title(document: Any, fallback: str | None) -> str | None:
     if best_texts:
         return max(best_texts, key=len)
     return fallback
-
-
-def _set_future_result(job: _ExtractJob, result: PdfExtractStageResult) -> None:
-    def _set() -> None:
-        if not job.future.done():
-            job.future.set_result(result)
-
-    job.loop.call_soon_threadsafe(_set)
-
-
-def _set_future_exception(job: _ExtractJob, exc: BaseException) -> None:
-    def _set() -> None:
-        if not job.future.done():
-            job.future.set_exception(exc)
-
-    job.loop.call_soon_threadsafe(_set)
 
 
 class PdfExtractStage(Stage):
@@ -338,7 +293,7 @@ class PdfExtractStage(Stage):
             )
 
         if result.status == Status.COMPLETED:
-            # Prefer a crawl-agent title already set on the PDF; use Docling
+            # Prefer a crawl-agent title already set on the PDF; use extraction
             # only when none was discovered (or it expired before this PDF).
             if document.title:
                 result = result.model_copy(update={"title": document.title})
@@ -363,7 +318,7 @@ class PdfExtractStage(Stage):
                 version_id=version_id,
                 fallback_title=fallback_title,
             )
-        return await DoclingWorker.instance().submit(
+        return await PdfExtractWorker.instance().submit(
             pdf_path=pdf_path,
             out_dir=out_dir,
             version_id=version_id,
