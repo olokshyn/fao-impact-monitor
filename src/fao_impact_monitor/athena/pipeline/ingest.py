@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pydantic import BaseModel, Field
 
 from fao_impact_monitor.athena.agents.schemas import (
@@ -23,6 +25,11 @@ from fao_impact_monitor.athena.model.records import (
 from fao_impact_monitor.athena.model.status import ScientificStatus, VerificationStatus
 from fao_impact_monitor.athena.ns import GRAPH_ACCEPTED
 from fao_impact_monitor.athena.observe import log_claim
+from fao_impact_monitor.athena.pipeline.load import (
+    load_assertions,
+    load_claims,
+    load_evidence,
+)
 from fao_impact_monitor.athena.pipeline.tags import derive_broader_regions, merge_tags
 from fao_impact_monitor.athena.pipeline.verify import (
     citation_errors,
@@ -37,6 +44,7 @@ from fao_impact_monitor.athena.storage.ontology import LocationHierarchy, tag_re
 from fao_impact_monitor.athena.storage.rdf import (
     claim_iri,
     concept_iri,
+    delete_record,
     evidence_iri,
     knowledge_graph,
     source_iri,
@@ -172,6 +180,8 @@ async def _materialize(
     ]
     claim_ids: list[str] = []
     claims: list[ClaimRecord] = []
+    pending: dict[str, tuple[ClaimRecord, EvidenceRecord]] = {}
+    kept_evidence: set[str] = set()
     for claim_draft in drafts_claims:
         if claim_draft.evidence_index < 0 or claim_draft.evidence_index >= len(
             evidence_records
@@ -180,9 +190,27 @@ async def _materialize(
         evidence = evidence_records[claim_draft.evidence_index]
         claim = _claim_from_draft(claim_draft, evidence, source, registry, hierarchy)
         write_record(ctx.graph, evidence, GRAPH_ACCEPTED, index=False)
-        claim = await _verify_claim(
-            ctx, claim, evidence, text, source.version, registry
-        )
+        kept_evidence.add(evidence.iri)
+        prior = pending.get(claim.iri)
+        if prior is not None:
+            stored, first = prior
+            if evidence.iri not in stored.evidence_iris:
+                stored = stored.model_copy(
+                    update={"evidence_iris": [*stored.evidence_iris, evidence.iri]}
+                )
+                pending[claim.iri] = (stored, first)
+            continue
+        pending[claim.iri] = (claim, evidence)
+    limit = asyncio.Semaphore(8)
+
+    async def _check(iri: str) -> ClaimRecord:
+        claim, evidence = pending[iri]
+        async with limit:
+            return await _verify_claim(
+                ctx, claim, evidence, text, source.version, registry
+            )
+
+    for claim in await asyncio.gather(*(_check(iri) for iri in pending)):
         write_record(
             ctx.graph,
             claim,
@@ -202,9 +230,38 @@ async def _materialize(
         claim_ids.append(claim.iri)
         if claim.verification_status == VerificationStatus.VERIFIED:
             ctx.gate.submit("discover", {"claim_iri": claim.iri})
+    await _drop_replaced_claims(ctx, source.iri, set(claim_ids), kept_evidence)
     for relation_draft in drafts_relations:
         await _persist_explicit(ctx, relation_draft, claims, evidence_records, text)
     return claim_ids
+
+
+async def _drop_replaced_claims(
+    ctx: AthenaContext,
+    source_id: str,
+    kept_claims: set[str],
+    kept_evidence: set[str],
+) -> None:
+    """A new extraction of a source replaces that source's previous claims."""
+    evidence = load_evidence(ctx.graph)
+    source_evidence = {
+        item.iri for item in evidence.values() if item.source_iri == source_id
+    }
+    removed = {
+        claim.iri
+        for claim in load_claims(ctx.graph).values()
+        if claim.iri not in kept_claims
+        and claim.evidence_iris
+        and set(claim.evidence_iris).issubset(source_evidence)
+    }
+    for assertion in load_assertions(ctx.graph).values():
+        if assertion.subject_iri in removed or assertion.object_iri in removed:
+            delete_record(ctx.graph, assertion.iri)
+    for iri in removed:
+        delete_record(ctx.graph, iri)
+        await ctx.index.delete(iri)
+    for iri in source_evidence - kept_evidence:
+        delete_record(ctx.graph, iri)
 
 
 def _evidence_from_draft(
@@ -220,11 +277,8 @@ def _evidence_from_draft(
         if found >= 0:
             start = found
             end = found + len(draft.excerpt)
-    locator = "|".join(
-        [draft.page or "", draft.section or "", draft.table_cell or "", str(start)]
-    )
     return EvidenceRecord(
-        iri=evidence_iri(source.content_hash, locator, draft.excerpt),
+        iri=evidence_iri(source.content_hash, draft.excerpt),
         excerpt=draft.excerpt,
         source_iri=source.iri,
         source_version=source.version,
@@ -260,7 +314,6 @@ def _claim_from_draft(
     return ClaimRecord(
         iri=claim_iri(
             draft.normalized,
-            [evidence.iri],
             draft.conditions,
             draft.location,
             draft.time_scope,

@@ -212,6 +212,7 @@ class EvidenceView(BaseModel):
 
 class ResearchResult(BaseModel):
     question: str
+    answer: str = ""
     strict: EvidenceView
     extrapolation: EvidenceView | None = None
     discovered_claim_ids: list[str] = Field(default_factory=list)

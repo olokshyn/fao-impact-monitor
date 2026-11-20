@@ -8,6 +8,7 @@ from fao_impact_monitor.athena.observe import DecisionLog
 
 INSTRUCTIONS = """
 Extract atomic claims from the source text.
+Emit each proposition once. Do not restate a fact you already extracted.
 Copy excerpts exactly from the text. Do not invent quantities, units, negation, or scope.
 Put a place in applicable_tags only when the evidence applies there. Places that are
 only mentioned go in mentioned_places.

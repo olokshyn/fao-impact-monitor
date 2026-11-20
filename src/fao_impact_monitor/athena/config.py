@@ -42,11 +42,11 @@ class AthenaConfig(BaseSettings):
     research_batch_wait_seconds: float = 0
     maintain_batch_size: int = 4
     maintain_batch_wait_seconds: float = 60
-    ingestion_model: str = "openai.gpt-5.6-luna"
-    verifier_model: str = "openai.gpt-5.6-luna"
-    discovery_model: str = "openai.gpt-5.6-luna"
-    ontology_model: str = "openai.gpt-5.6-luna"
-    research_model: str = "openai.gpt-5.6-terra"
+    ingestion_model: str = "openai.gpt-6-luna"
+    verifier_model: str = "jev-1.14.0"
+    discovery_model: str = "jev-1.14.0"
+    ontology_model: str = "openai.gpt-6-luna"
+    research_model: str = "openai.gpt-6.1-terra"
     candidate_limit: int = 20
     research_max_rounds: int = 4
     api_host: str = "127.0.0.1"

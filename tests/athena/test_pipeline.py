@@ -100,6 +100,70 @@ def test_ingestion_verifies_citation_and_logs_the_claim(tmp_path: Path) -> None:
     assert again == ids
 
 
+def test_repeated_proposition_is_one_claim_and_reingest_replaces_it(
+    tmp_path: Path,
+) -> None:
+    credit_and = (
+        "About 4.9% of total credit went to agriculture in 2024, and many "
+        "households have limited buffers."
+    )
+    credit_semi = (
+        "About 4.9% of total credit went to agriculture in 2024; many "
+        "households have limited buffers."
+    )
+    drought = "Drought killed hundreds of thousands of animals."
+    text = f"{credit_and}\n{credit_semi}\n{drought}"
+
+    def draft(wording: str, index: int) -> ClaimDraft:
+        return ClaimDraft(
+            original_wording=wording,
+            normalized=wording,
+            evidence_index=index,
+            concept_label="exposure",
+        )
+
+    ctx = make_context(
+        tmp_path,
+        extractor=RecordingExtractor(
+            ExtractionResult(
+                evidence=[
+                    EvidenceDraft(excerpt=credit_and, section="A"),
+                    EvidenceDraft(excerpt=credit_semi, section="B"),
+                    EvidenceDraft(excerpt=drought, section="C"),
+                ],
+                claims=[
+                    draft(credit_and, 0),
+                    draft(credit_semi, 1),
+                    draft(drought, 2),
+                ],
+            )
+        ),
+    )
+    ref = ctx.objects.put("upload/doc", text.encode(), media_type="text/plain")
+    document = StoredDocument(
+        logical_id=ref.logical_id,
+        version=ref.version,
+        sha256=ref.sha256,
+        media_type=ref.media_type,
+    )
+    ids = asyncio.run(ingest_document(ctx, document))
+    claims = load_claims(ctx.graph)
+    assert len(ids) == 2
+    credit = claims[next(item for item in ids if "4.9%" in claims[item].normalized)]
+    assert len(credit.evidence_iris) == 1
+
+    ctx.extractor = RecordingExtractor(
+        ExtractionResult(
+            evidence=[EvidenceDraft(excerpt=credit_and)],
+            claims=[draft(credit_and, 0)],
+        )
+    )
+    again = asyncio.run(ingest_document(ctx, document))
+    remaining = load_claims(ctx.graph)
+    assert again == [credit.iri]
+    assert list(remaining) == [credit.iri]
+
+
 def test_correlation_cannot_pass_as_source_reported_cause(tmp_path: Path) -> None:
     text = "Rainfall correlated with yield."
     ctx = make_context(tmp_path, verifier=RecordingVerifier(causality=False))

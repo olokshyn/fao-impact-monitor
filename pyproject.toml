@@ -39,6 +39,7 @@ dependencies = [
     "rdflib>=7.6.0",
     "scrapling[fetchers]>=0.4.12",
     "typer>=0.26.8",
+    "typesafe-sdk>=0.7.5",
     "uvicorn>=0.52.1",
     "wbgapi>=1.0.14",
     "web-scout-ai>=1.3.9",

@@ -101,6 +101,7 @@ async def run_research(
     _drop_indirect_causes(strict_view, strict_assertions)
     result = ResearchResult(
         question=question,
+        answer=synthesis.answer,
         strict=strict_view,
         extrapolation=extrapolation,
     )
@@ -129,6 +130,7 @@ async def _explore(
     questions = plan.subquestions or [SubQuestion(text=question)]
     for sub in questions:
         for _round in range(rounds):
+            before = len(found)
             claims = await retrieve_candidates(
                 ctx.graph,
                 ctx.index,
@@ -142,35 +144,36 @@ async def _explore(
             )
             for claim in claims:
                 found[claim.iri] = claim
-            if len(found) >= 2:
-                seed = next(iter(found))
-                await discover_for_claim(
-                    ctx, seed, spec=spec, extra=list(found.values())
-                )
-            evidence = load_evidence(ctx.graph)
-            known = dict(found)
-            for claim in list(found.values()):
-                for parent in ("causes", "correlatesWith", "supports", "contradicts"):
-                    views = query_relations(
-                        ctx.graph,
-                        claim.iri,
-                        parent,
-                        "both",
-                        spec,
-                        hierarchy.ancestors,
-                        known,
-                        evidence,
-                    )
-                    for view in views:
-                        if view.extrapolation and not spec.transferability:
-                            continue
-                        assertions[view.assertion.iri] = view.assertion
-                        for endpoint in (
-                            view.assertion.subject_iri,
-                            view.assertion.object_iri,
-                        ):
-                            if endpoint in known:
-                                found[endpoint] = known[endpoint]
+            if len(found) == before:
+                break
+    if len(found) >= 2:
+        await discover_for_claim(
+            ctx, next(iter(found)), spec=spec, extra=list(found.values())
+        )
+    evidence = load_evidence(ctx.graph)
+    known = dict(found)
+    for claim in list(found.values()):
+        for parent in ("causes", "correlatesWith", "supports", "contradicts"):
+            views = query_relations(
+                ctx.graph,
+                claim.iri,
+                parent,
+                "both",
+                spec,
+                hierarchy.ancestors,
+                known,
+                evidence,
+            )
+            for view in views:
+                if view.extrapolation and not spec.transferability:
+                    continue
+                assertions[view.assertion.iri] = view.assertion
+                for endpoint in (
+                    view.assertion.subject_iri,
+                    view.assertion.object_iri,
+                ):
+                    if endpoint in known:
+                        found[endpoint] = known[endpoint]
     return found, assertions
 
 

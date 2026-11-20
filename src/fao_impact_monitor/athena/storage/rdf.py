@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from rdflib import Literal, URIRef
 
 from fao_impact_monitor.athena.model.records import (
@@ -51,17 +52,29 @@ def digest(*parts: str) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+_CLAUSE_AND = re.compile(r",\s+and\b", re.IGNORECASE)
+_SEMICOLON = re.compile(r"[;；]")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def canonical_proposition(text: str) -> str:
+    """Identity key for a proposition. Punctuation that does not change the fact is ignored."""
+    cleaned = _SEMICOLON.sub(",", text.casefold())
+    cleaned = _CLAUSE_AND.sub(",", cleaned)
+    cleaned = _WHITESPACE.sub(" ", cleaned).strip(" .")
+    return cleaned
+
+
 def source_iri(content_hash: str) -> str:
     return term(f"source/{content_hash}")
 
 
-def evidence_iri(source_hash: str, locator: str, excerpt: str) -> str:
-    return term(f"evidence/{digest(source_hash, locator, excerpt)}")
+def evidence_iri(source_hash: str, excerpt: str) -> str:
+    return term(f"evidence/{digest(source_hash, canonical_proposition(excerpt))}")
 
 
 def claim_iri(
     normalized: str,
-    evidence_ids: list[str],
     conditions: list[str],
     location: str | None,
     time_scope: str | None,
@@ -70,12 +83,11 @@ def claim_iri(
     return term(
         "claim/"
         + digest(
-            normalized,
-            "|".join(sorted(evidence_ids)),
-            "|".join(conditions),
-            location or "",
-            time_scope or "",
-            population or "",
+            canonical_proposition(normalized),
+            "|".join(canonical_proposition(item) for item in conditions),
+            canonical_proposition(location or ""),
+            canonical_proposition(time_scope or ""),
+            canonical_proposition(population or ""),
         )
     )
 
@@ -150,7 +162,10 @@ def read_model[T: BaseModel](store: GraphStore, iri: str, model: type[T]) -> T |
     rows = store.query(query)
     if not rows:
         return None
-    return model.model_validate_json(rows[0]["json"])
+    try:
+        return model.model_validate_json(rows[0]["json"])
+    except ValidationError:
+        return None
 
 
 def read_graph_of(store: GraphStore, iri: str) -> str | None:

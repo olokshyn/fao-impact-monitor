@@ -17,6 +17,7 @@ from fao_impact_monitor.athena.storage.ontology import (
     tag_registry,
 )
 from fao_impact_monitor.athena.storage.rdf import (
+    canonical_proposition,
     claim_iri,
     evidence_iri,
     source_iri,
@@ -41,18 +42,27 @@ def test_ontology_seed_has_hierarchy_tags_and_locations(tmp_path: object) -> Non
     assert ancestors == {"eastern-africa"}
 
 
+def test_punctuation_does_not_create_a_second_claim() -> None:
+    comma = "About 4.9% of credit went to agriculture in 2024, and households have limited buffers."
+    semicolon = "About 4.9% of credit went to agriculture in 2024; households have limited buffers."
+    assert claim_iri(comma, [], None, None, None) == claim_iri(
+        semicolon, [], None, None, None
+    )
+    assert "and" in canonical_proposition("forestry and fishing")
+
+
 def test_claim_write_is_idempotent(tmp_path: object) -> None:
     from pathlib import Path
 
     ctx = make_context(Path(str(tmp_path)))
     evidence = EvidenceRecord(
-        iri=evidence_iri("hash", "p1", "Maize yield fell."),
+        iri=evidence_iri("hash", "Maize yield fell."),
         excerpt="Maize yield fell.",
         source_iri=source_iri("hash"),
         source_version="1",
     )
     claim = ClaimRecord(
-        iri=claim_iri("yield fell", [evidence.iri], [], "KEN", "2024", None),
+        iri=claim_iri("yield fell", [], "KEN", "2024", None),
         original_wording="Maize yield fell.",
         normalized="yield fell",
         evidence_iris=[evidence.iri],

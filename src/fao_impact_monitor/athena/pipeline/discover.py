@@ -66,15 +66,19 @@ async def discover_for_claim(
         obj = known.get(relation.object_iri)
         if obj is None or subject.iri == obj.iri:
             continue
-        source_text = _excerpts(
-            evidence, relation.evidence_iris or subject.evidence_iris
-        )
+        cited = [iri for iri in relation.evidence_iris if iri in evidence]
+        evidence_iris = cited or [
+            iri for iri in subject.evidence_iris if iri in evidence
+        ]
+        if not evidence_iris:
+            continue
+        source_text = _excerpts(evidence, evidence_iris)
         stored = await persist_proposed(
             ctx,
             subject=subject,
             obj=obj,
             relation_name=relation.relation,
-            evidence_iris=relation.evidence_iris or subject.evidence_iris,
+            evidence_iris=evidence_iris,
             conditions=relation.conditions,
             scientific=relation.scientific_status,
             tentative=relation.tentative,
